@@ -82,11 +82,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-# Database
+# Database — SQLite stored in /app/db/ which is a Docker volume for persistence
+_default_db_path = str(BASE_DIR / "db" / "db.sqlite3") if os.path.isdir(str(BASE_DIR / "db")) else str(BASE_DIR / "db.sqlite3")
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": os.getenv("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
+        "NAME": os.getenv("SQLITE_PATH", _default_db_path),
         "OPTIONS": {
             "timeout": 30,  # Wait up to 30s for locks
         },
