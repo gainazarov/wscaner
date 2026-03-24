@@ -220,33 +220,39 @@ class ScannerEngine:
                 await self._bfs_crawl(session)
                 await self._emit("phase_complete", phase="crawl", module="HTML + JS Crawler", urls_found=len(self.results))
 
-                # Phase 5: If aiohttp found very few URLs, try Playwright browser crawl
-                if self.stealth and len(self.results) < 10:
-                    logger.info(f"Only {len(self.results)} URLs found with aiohttp, trying Playwright browser crawl...")
-                    await self._emit("phase_start", phase="browser_crawl", module="Stealth Browser Crawler")
-                    browser_urls = await self._playwright_crawl()
-                    new_found = 0
-                    for url_info in browser_urls:
-                        url = url_info.get("url", "")
-                        if url and url not in self.visited:
-                            self.visited.add(url)
-                            url_is_internal, ext_domain = self._classify_url(url)
-                            url_info["is_internal"] = url_is_internal
-                            url_info["external_domain"] = ext_domain
-                            if url_is_internal:
-                                self._internal_count += 1
-                            else:
-                                self._external_count += 1
-                            self.results.append(url_info)
-                            new_found += 1
-                            await self._emit("url_found",
-                                url=url, source="browser",
-                                status_code=url_info.get("status_code"),
-                                depth=url_info.get("depth", 0),
-                                is_internal=url_is_internal,
-                                external_domain=ext_domain,
-                            )
-                    await self._emit("phase_complete", phase="browser_crawl", module="Stealth Browser Crawler", urls_found=new_found)
+                # Phase 5: Playwright browser crawl (behavior-driven)
+                # Run when aiohttp found few URLs (anti-bot blocked most requests)
+                if self.stealth:
+                    aiohttp_count = len(self.results)
+                    if aiohttp_count < 50:
+                        logger.info(f"Running Playwright browser crawl (aiohttp found {aiohttp_count} URLs)...")
+                        await self._emit("phase_start", phase="browser_crawl", module="Behavior-Driven Browser Scanner")
+                        browser_urls = await self._playwright_crawl()
+                        new_found = 0
+                        for url_info in browser_urls:
+                            url = url_info.get("url", "")
+                            if url and url not in self.visited:
+                                self.visited.add(url)
+                                url_is_internal, ext_domain = self._classify_url(url)
+                                url_info["is_internal"] = url_is_internal
+                                url_info["external_domain"] = ext_domain
+                                if url_is_internal:
+                                    self._internal_count += 1
+                                else:
+                                    self._external_count += 1
+                                self.results.append(url_info)
+                                new_found += 1
+                                await self._emit("url_found",
+                                    url=url, source="browser",
+                                    status_code=url_info.get("status_code"),
+                                    depth=url_info.get("depth", 0),
+                                    is_internal=url_is_internal,
+                                    external_domain=ext_domain,
+                                )
+                        await self._emit("phase_complete", phase="browser_crawl",
+                            module="Behavior-Driven Browser Scanner", urls_found=new_found)
+                    else:
+                        logger.info(f"aiohttp found {aiohttp_count} URLs, skipping browser crawl")
         except Exception as e:
             await self._emit("scan_error", error=str(e))
             raise
@@ -520,8 +526,15 @@ class ScannerEngine:
 
     async def _playwright_crawl(self) -> list[dict[str, Any]]:
         """
-        Fallback Playwright-based crawl for sites with heavy anti-bot protection.
-        Uses a real browser to render pages and extract links via DOM.
+        Behavior-driven Playwright crawl for sites with anti-bot protection.
+        Uses a real browser with:
+          - Action-based clicking (buttons, [role=button], div[onclick], etc.)
+          - Navigation detection (URL change + DOM hash)
+          - BFS queue through browser
+          - Click deduplication
+          - Network capture with source page mapping
+          - Smart wait for SPA rendering
+          - Retry logic for navigation and clicks
         """
         results = []
         try:
@@ -532,6 +545,305 @@ class ScannerEngine:
 
         pw = None
         browser = None
+
+        # ── State ──
+        visited_urls: set[str] = set()
+        visited_actions: set[tuple[str, str]] = set()  # (page_url, selector) dedup
+        api_endpoints: dict[str, str] = {}  # api_url -> found_on_page
+        page_hashes: set[str] = set()  # DOM fingerprints for dedup
+        bfs_queue: deque[tuple[str, int, str]] = deque()  # (url, depth, found_on)
+        total_clicks = 0
+
+        # ── Clickable selectors (priority ordered) ──
+        CLICK_SELECTORS = [
+            # Navigation
+            "nav a", "header a", "[role='navigation'] a",
+            ".sidebar a", ".menu a", ".nav a",
+            # Buttons
+            "nav button", "header button", "[role='navigation'] button",
+            ".sidebar button",
+            # ARIA roles
+            "[role='button']", "[role='tab']", "[role='menuitem']",
+            "[role='link']",
+            # Interactive elements
+            "[data-toggle]", "[aria-expanded]",
+            "div[onclick]", "span[onclick]", "li[onclick]",
+            "[data-href]", "[data-url]", "[data-link]",
+            # Menu / nav classes
+            ".menu-item", ".nav-item", ".nav-link",
+            "a[class*='menu']", "a[class*='nav']",
+            "button[class*='menu']", "button[class*='nav']",
+            # User-area (critical for 1xbet-like sites)
+            "[class*='user'] a", "[class*='avatar'] a",
+            "[class*='account'] a", "[class*='profile'] a",
+            "[class*='cabinet'] a", "[class*='balance']",
+            "[class*='deposit']", "[class*='sport']",
+            "[class*='casino']", "[class*='live']",
+            "[class*='promo']", "[class*='bonus']",
+            # Footer links
+            "footer a",
+        ]
+
+        async def _get_dom_hash(page) -> str:
+            """Get a fast DOM fingerprint for change detection."""
+            try:
+                return await page.evaluate("""() => {
+                    const el = document.querySelector('main, #app, #root, [role=main], .content, body');
+                    if (!el) return '';
+                    const text = el.innerText || '';
+                    const links = document.querySelectorAll('a').length;
+                    const inputs = document.querySelectorAll('input').length;
+                    return text.substring(0, 500).replace(/\\s+/g, ' ') + '|L' + links + '|I' + inputs;
+                }""")
+            except Exception:
+                return ""
+
+        async def _smart_wait_page(page, timeout_s=8):
+            """Wait for SPA content to render — body, containers, network settle."""
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=timeout_s * 1000)
+            except Exception:
+                pass
+            # Wait for any main container
+            for sel in ["main", "#app", "#root", "#__next", "[role='main']", ".content"]:
+                try:
+                    await page.wait_for_selector(sel, timeout=2000, state="attached")
+                    break
+                except Exception:
+                    continue
+            # Let JS render
+            await asyncio.sleep(1.5)
+            # Scroll to trigger lazy loading
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
+                await asyncio.sleep(0.5)
+                await page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
+
+        async def _goto_with_retry(page, url, retries=3):
+            """Navigate with retry logic."""
+            for attempt in range(retries):
+                try:
+                    resp = await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                    return resp
+                except Exception as e:
+                    if attempt < retries - 1:
+                        logger.debug(f"Goto retry {attempt+1}/{retries} for {url}: {e}")
+                        await asyncio.sleep(random.uniform(1, 3))
+                    else:
+                        # Last attempt: try with 'commit' (less strict)
+                        try:
+                            resp = await page.goto(url, timeout=15000, wait_until="commit")
+                            return resp
+                        except Exception:
+                            logger.debug(f"Goto failed completely for {url}")
+                            return None
+
+        async def _extract_all_links(page, domain) -> set[str]:
+            """Extract links from DOM: a[href], button hrefs, data-*, onclick, router, window.location."""
+            try:
+                raw_urls = await page.evaluate("""() => {
+                    const urls = new Set();
+
+                    // Standard <a href>
+                    document.querySelectorAll('a[href]').forEach(el => {
+                        const href = el.getAttribute('href');
+                        if (href && href.trim() && !href.startsWith('#') &&
+                            !href.startsWith('javascript:') && !href.startsWith('mailto:') &&
+                            !href.startsWith('tel:') && !href.startsWith('data:')) {
+                            urls.add(href.trim());
+                        }
+                    });
+
+                    // SPA framework attrs
+                    ['data-href', 'routerlink', 'ng-href', 'to', 'data-url',
+                     'data-link', 'data-route', 'data-path', 'data-navigate'].forEach(attr => {
+                        document.querySelectorAll('[' + attr + ']').forEach(el => {
+                            const val = el.getAttribute(attr);
+                            if (val && val.trim()) urls.add(val.trim());
+                        });
+                    });
+
+                    // [role=link] with data attributes
+                    document.querySelectorAll('[role="link"]').forEach(el => {
+                        for (const attr of el.attributes) {
+                            if (attr.value && attr.value.startsWith('/') && attr.value.length > 1) {
+                                urls.add(attr.value);
+                            }
+                        }
+                    });
+
+                    // onclick with URLs
+                    document.querySelectorAll('[onclick]').forEach(el => {
+                        const onclick = el.getAttribute('onclick') || '';
+                        const m = onclick.match(/['\"](\\/[a-zA-Z][a-zA-Z0-9_\\/-]*)['\"]|location[\\s.]*(?:href)?[\\s]*=[\\s]*['\"]([^'\"]+)['\"]/g);
+                        if (m) m.forEach(match => {
+                            const url = match.replace(/.*['\"]([^'\"]+)['\"].*/, '$1');
+                            if (url.startsWith('/') || url.startsWith('http')) urls.add(url);
+                        });
+                    });
+
+                    // window.__NEXT_DATA__
+                    try {
+                        if (window.__NEXT_DATA__) {
+                            const s = JSON.stringify(window.__NEXT_DATA__);
+                            (s.match(/"href":"([^"]+)"/g) || []).forEach(m => {
+                                const url = m.replace(/"href":"([^"]+)"/, '$1');
+                                if (url.startsWith('/')) urls.add(url);
+                            });
+                        }
+                    } catch(e) {}
+
+                    // Route patterns in inline scripts
+                    try {
+                        document.querySelectorAll('script:not([src])').forEach(script => {
+                            const text = script.textContent || '';
+                            if (text.length > 500000) return;
+                            // Path-like strings
+                            const paths = text.match(/['\"\\/]((?:dashboard|account|profile|settings|cabinet|wallet|history|bonus|deposit|withdraw|personal|balance|transactions|notifications|cashier|my|favorites|live|prematch|casino|games|sport|esport|virtual|poker|lottery|slots|promotions|vip|help|faq|contact|about|terms|rules|support)[a-zA-Z0-9_\\/-]*)['\"\\/]/gi);
+                            if (paths) paths.forEach(m => {
+                                const url = m.replace(/^['\"\\//]|['\"\\//]$/g, '');
+                                if (url && !url.includes(' ')) urls.add('/' + url.replace(/^\\//, ''));
+                            });
+                            // Router definitions
+                            const routerPaths = text.match(/path\\s*:\\s*['\"](\\/[^'\"]+)['\"]/g);
+                            if (routerPaths) routerPaths.forEach(m => {
+                                const url = m.replace(/path\\s*:\\s*['\"]([^'\"]+)['\"]/, '$1');
+                                if (url.startsWith('/')) urls.add(url);
+                            });
+                        });
+                    } catch(e) {}
+
+                    return Array.from(urls);
+                }""")
+
+                links = set()
+                base_url = page.url
+                for raw in raw_urls:
+                    try:
+                        if raw.startswith("//"):
+                            raw = "https:" + raw
+                        elif raw.startswith("/"):
+                            raw = urljoin(base_url, raw)
+                        elif not raw.startswith("http"):
+                            raw = urljoin(base_url, raw)
+                        normalized = normalize_url(raw)
+                        if normalized and is_valid_url(normalized):
+                            links.add(normalized)
+                    except Exception:
+                        continue
+                return links
+            except Exception as e:
+                logger.debug(f"Link extraction error: {e}")
+                return set()
+
+        async def _click_interactive_elements(page, domain, current_depth):
+            """Click buttons, [role=button], etc. and detect new pages via URL + DOM change."""
+            nonlocal total_clicks
+            discovered = set()
+            page_url = normalize_url(page.url) or page.url
+
+            for selector in CLICK_SELECTORS:
+                try:
+                    elements = await page.query_selector_all(selector)
+                except Exception:
+                    continue
+
+                for el in elements[:5]:
+                    if total_clicks >= 100:  # Global click limit
+                        return discovered
+                    try:
+                        is_visible = await el.is_visible()
+                        if not is_visible:
+                            continue
+
+                        # Get element identifier for dedup
+                        el_id = ""
+                        try:
+                            el_id = await page.evaluate("""(el) => {
+                                const tag = el.tagName.toLowerCase();
+                                const text = (el.textContent || '').trim().substring(0, 50);
+                                const href = el.getAttribute('href') || '';
+                                const cls = (el.className || '').toString().trim().substring(0, 50);
+                                return tag + '|' + text + '|' + href + '|' + cls;
+                            }""", el)
+                        except Exception:
+                            el_id = selector
+
+                        dedup_key = (page_url, el_id)
+                        if dedup_key in visited_actions:
+                            continue
+                        visited_actions.add(dedup_key)
+
+                        # For <a> with href: just collect, don't click
+                        href = await el.get_attribute("href")
+                        if href:
+                            try:
+                                resolved = normalize_url(urljoin(page.url, href))
+                                if resolved and is_valid_url(resolved) and not is_external(resolved, domain):
+                                    if resolved not in visited_urls:
+                                        discovered.add(resolved)
+                            except Exception:
+                                pass
+                            continue  # Don't click links — just queue them
+
+                        # For non-link elements: click and detect navigation
+                        before_url = page.url
+                        before_dom = await _get_dom_hash(page)
+
+                        try:
+                            await el.click(timeout=3000, force=False)
+                            total_clicks += 1
+                            await self._emit("browser_click",
+                                selector=selector, page=page_url,
+                                element=el_id[:80], clicks_total=total_clicks)
+                        except Exception:
+                            continue
+
+                        await asyncio.sleep(random.uniform(0.8, 1.5))
+
+                        # ── Navigation detection ──
+                        after_url = page.url
+                        after_dom = await _get_dom_hash(page)
+
+                        url_changed = normalize_url(after_url) != normalize_url(before_url)
+                        dom_changed = after_dom != before_dom and len(after_dom) > 10
+
+                        if url_changed:
+                            new_url = normalize_url(after_url)
+                            if new_url and not is_external(new_url, domain):
+                                if new_url not in visited_urls:
+                                    discovered.add(new_url)
+                                    await self._emit("browser_nav",
+                                        url=new_url, source="click",
+                                        trigger=el_id[:80])
+                                    logger.debug(f"Click→Nav: {new_url}")
+
+                            # Go back
+                            try:
+                                await page.go_back(timeout=10000, wait_until="domcontentloaded")
+                                await asyncio.sleep(0.5)
+                            except Exception:
+                                try:
+                                    await _goto_with_retry(page, page_url)
+                                    await _smart_wait_page(page)
+                                except Exception:
+                                    break
+
+                        elif dom_changed:
+                            # DOM changed but URL didn't — SPA route or modal
+                            # Extract new links from changed DOM
+                            new_links = await _extract_all_links(page, domain)
+                            for link in new_links:
+                                if link not in visited_urls and not is_external(link, domain):
+                                    discovered.add(link)
+
+                    except Exception:
+                        continue
+
+            return discovered
+
         try:
             pw = await async_playwright().start()
             browser = await pw.chromium.launch(
@@ -551,163 +863,231 @@ class ScannerEngine:
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 delete navigator.__proto__.webdriver;
-                window.chrome = {runtime: {id: 'x'}, loadTimes: function(){}, csi: function(){}};
+                window.chrome = {runtime: {id: 'x'}, loadTimes: function(){return {};}, csi: function(){return {};}};
                 Object.defineProperty(navigator, 'plugins', {get: () => [{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'},{name:'Native Client'}]});
                 Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'ru']});
                 Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+                Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+                Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+                const gp = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(p) {
+                    if (p === 37445) return 'Google Inc. (NVIDIA)';
+                    if (p === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650)';
+                    return gp.call(this, p);
+                };
             """)
             page = await context.new_page()
 
-            # Capture XHR/fetch API calls
-            api_urls = set()
+            # ── Network capture with source mapping ──
+            current_page_url = [self.base_url]  # mutable ref for closure
+
             def on_request(req):
-                if req.resource_type in ("xhr", "fetch"):
-                    url = normalize_url(req.url)
-                    if url and is_valid_url(url):
-                        api_urls.add(url)
+                try:
+                    if req.resource_type in ("xhr", "fetch"):
+                        url = normalize_url(req.url)
+                        if url and is_valid_url(url):
+                            if url not in api_endpoints:
+                                api_endpoints[url] = current_page_url[0]
+                                logger.debug(f"API: {req.method} {url} (from {current_page_url[0]})")
+                except Exception:
+                    pass
+
+            def on_response(resp):
+                try:
+                    if resp.request.resource_type in ("xhr", "fetch"):
+                        url = normalize_url(resp.url)
+                        if url and is_valid_url(url) and url not in api_endpoints:
+                            api_endpoints[url] = current_page_url[0]
+                except Exception:
+                    pass
+
             page.on("request", on_request)
+            page.on("response", on_response)
 
-            # Visit main page
-            logger.info(f"Playwright crawl: visiting {self.base_url}")
-            try:
-                resp = await page.goto(self.base_url, timeout=30000, wait_until="domcontentloaded")
-                status = resp.status if resp else 0
-            except Exception as e:
-                logger.warning(f"Playwright crawl: initial navigation failed: {e}")
+            # ── Visit main page ──
+            logger.info(f"Browser crawl: visiting {self.base_url}")
+            await self._emit("browser_crawl_start", domain=self.domain, mode="behavior_driven")
+
+            resp = await _goto_with_retry(page, self.base_url)
+            if not resp:
                 return results
+            await _smart_wait_page(page)
 
-            # Wait for JS rendering
-            await asyncio.sleep(3)
+            start_url_norm = normalize_url(page.url) or normalize_url(self.base_url)
+            visited_urls.add(start_url_norm)
+            dom_hash = await _get_dom_hash(page)
+            if dom_hash:
+                page_hashes.add(dom_hash[:200])
 
-            # Scroll to trigger lazy loading
+            results.append({
+                "url": start_url_norm,
+                "source": "browser",
+                "status_code": resp.status if resp else 0,
+                "content_type": "text/html",
+                "depth": 0,
+                "found_on": "",
+            })
+
+            await self._emit("browser_page_visited",
+                url=start_url_norm, depth=0, pages_total=1, queue_size=0)
+
+            # ── Extract links from start page ──
+            initial_links = await _extract_all_links(page, self.domain)
+            # Also extract from HTML using our modules
             try:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                await asyncio.sleep(1)
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(1)
-                await page.evaluate("window.scrollTo(0, 0)")
+                html = await page.content()
+                for module in self.modules:
+                    if isinstance(module, (HTMLModule, JSModule)):
+                        try:
+                            module_links = module.extract(self.base_url, html, self.domain)
+                            for l in module_links:
+                                nl = normalize_url(l)
+                                if nl and is_valid_url(nl):
+                                    initial_links.add(nl)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
-            # Extract all links from DOM
-            links = await page.evaluate("""() => {
-                const urls = new Set();
-                document.querySelectorAll('a[href]').forEach(el => {
-                    const href = el.getAttribute('href');
-                    if (href && href.trim() && !href.startsWith('#') && 
-                        !href.startsWith('javascript:') && !href.startsWith('mailto:')) {
-                        urls.add(href.trim());
-                    }
-                });
-                // Also check for data-href, ng-href, routerLink etc.
-                ['data-href', 'routerlink', 'ng-href'].forEach(attr => {
-                    document.querySelectorAll('[' + attr + ']').forEach(el => {
-                        const val = el.getAttribute(attr);
-                        if (val && val.trim()) urls.add(val.trim());
-                    });
-                });
-                return Array.from(urls);
-            }""")
+            for link in initial_links:
+                if link not in visited_urls and not is_external(link, self.domain):
+                    bfs_queue.append((link, 1, start_url_norm))
 
-            logger.info(f"Playwright crawl: found {len(links)} raw links on main page")
+            # ── Click interactive elements on start page ──
+            click_discovered = await _click_interactive_elements(page, self.domain, 0)
+            for url in click_discovered:
+                if url not in visited_urls:
+                    bfs_queue.append((url, 1, start_url_norm))
 
-            # Also extract links from page HTML (using our modules)
-            html = await page.content()
-            for module in self.modules:
-                if isinstance(module, (HTMLModule, JSModule)):
-                    try:
-                        module_links = module.extract(self.base_url, html, self.domain)
-                        links.extend(module_links)
-                    except Exception:
-                        pass
+            logger.info(f"Start page: {len(initial_links)} links, {len(click_discovered)} from clicks, queue={len(bfs_queue)}")
 
-            # Process all discovered links
-            seen = set()
-            for link in links:
-                try:
-                    if link.startswith("//"):
-                        link = "https:" + link
-                    elif link.startswith("/"):
-                        link = urljoin(self.base_url, link)
-                    elif not link.startswith("http"):
-                        link = urljoin(self.base_url, link)
+            await self._emit("browser_progress",
+                pages_visited=1, queue_size=len(bfs_queue),
+                urls_found=len(results), api_found=len(api_endpoints),
+                clicks=total_clicks,
+                message=f"Queue: {len(bfs_queue)} URLs after start page")
 
-                    normalized = normalize_url(link)
-                    if normalized and normalized not in seen and normalized not in self.visited and is_valid_url(normalized):
-                        seen.add(normalized)
-                        results.append({
-                            "url": normalized,
-                            "source": "browser",
-                            "status_code": None,
-                            "content_type": "",
-                            "depth": 1,
-                        })
-                except Exception:
+            # ── BFS crawl loop ──
+            pages_visited = 1
+            scan_start = time.time()
+            max_time = 300  # 5 min max for browser crawl
+
+            while bfs_queue and pages_visited < self.max_pages:
+                if time.time() - scan_start > max_time:
+                    logger.info("Browser crawl: time limit reached")
+                    break
+
+                url, depth, found_on = bfs_queue.popleft()
+                if depth > self.max_depth:
                     continue
 
-            # Add API endpoints
-            for api_url in api_urls:
-                if api_url not in seen and api_url not in self.visited:
-                    seen.add(api_url)
+                normalized = normalize_url(url)
+                if not normalized or normalized in visited_urls:
+                    continue
+
+                visited_urls.add(normalized)
+                current_page_url[0] = normalized
+                pages_visited += 1
+
+                # Random delay
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                # Navigate with retry
+                resp = await _goto_with_retry(page, normalized)
+                if not resp:
+                    continue
+
+                await _smart_wait_page(page)
+
+                actual_url = normalize_url(page.url) or normalized
+                visited_urls.add(actual_url)
+
+                # Page fingerprint for dedup
+                dom_hash = await _get_dom_hash(page)
+                dom_key = dom_hash[:200] if dom_hash else ""
+                if dom_key and dom_key in page_hashes:
+                    logger.debug(f"Duplicate page content: {actual_url}")
+                    continue  # Same content as another page
+                if dom_key:
+                    page_hashes.add(dom_key)
+
+                results.append({
+                    "url": actual_url,
+                    "source": "browser",
+                    "status_code": resp.status if resp else 0,
+                    "content_type": "text/html",
+                    "depth": depth,
+                    "found_on": found_on,
+                })
+
+                await self._emit("browser_page_visited",
+                    url=actual_url, depth=depth,
+                    pages_total=pages_visited, queue_size=len(bfs_queue))
+
+                # Extract links
+                page_links = await _extract_all_links(page, self.domain)
+                new_count = 0
+                for link in page_links:
+                    if link not in visited_urls:
+                        if not is_external(link, self.domain):
+                            bfs_queue.append((link, depth + 1, actual_url))
+                            new_count += 1
+                        else:
+                            # Record external link
+                            ext_dom = extract_domain(link)
+                            if link not in visited_urls:
+                                visited_urls.add(link)
+                                results.append({
+                                    "url": link,
+                                    "source": "browser",
+                                    "status_code": None,
+                                    "content_type": "",
+                                    "depth": depth + 1,
+                                    "found_on": actual_url,
+                                    "is_internal": False,
+                                    "external_domain": ext_dom,
+                                })
+
+                # Click interactive elements (less aggressive on deeper pages)
+                if depth <= 2:
+                    max_cl = 15 if depth == 0 else 8
+                    click_disc = await _click_interactive_elements(page, self.domain, depth)
+                    for cu in click_disc:
+                        if cu not in visited_urls:
+                            bfs_queue.append((cu, depth + 1, actual_url))
+
+                await self._emit("browser_progress",
+                    pages_visited=pages_visited, queue_size=len(bfs_queue),
+                    urls_found=len(results), api_found=len(api_endpoints),
+                    clicks=total_clicks,
+                    message=f"Page {pages_visited}: +{new_count} links")
+
+            # ── Add API endpoints ──
+            for api_url, source_page in api_endpoints.items():
+                if api_url not in {r["url"] for r in results}:
                     results.append({
                         "url": api_url,
                         "source": "browser_api",
                         "status_code": None,
                         "content_type": "",
                         "depth": 0,
+                        "found_on": source_page,
                     })
+                    await self._emit("browser_api_found",
+                        url=api_url, found_on=source_page)
 
-            # Visit a few internal pages to discover more links (BFS depth 1)
-            internal_pages = [r for r in results if not is_external(r["url"], self.domain)][:15]
-            for page_info in internal_pages:
-                if len(results) >= self.max_pages:
-                    break
-                try:
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                    resp = await page.goto(page_info["url"], timeout=15000, wait_until="domcontentloaded")
-                    page_info["status_code"] = resp.status if resp else 0
-                    await asyncio.sleep(1.5)
-
-                    sub_links = await page.evaluate("""() => {
-                        const urls = new Set();
-                        document.querySelectorAll('a[href]').forEach(el => {
-                            const href = el.getAttribute('href');
-                            if (href && href.trim() && !href.startsWith('#') && 
-                                !href.startsWith('javascript:') && !href.startsWith('mailto:')) {
-                                urls.add(href.trim());
-                            }
-                        });
-                        return Array.from(urls);
-                    }""")
-
-                    for link in sub_links:
-                        try:
-                            if link.startswith("//"):
-                                link = "https:" + link
-                            elif link.startswith("/"):
-                                link = urljoin(self.base_url, link)
-                            elif not link.startswith("http"):
-                                link = urljoin(self.base_url, link)
-                            normalized = normalize_url(link)
-                            if normalized and normalized not in seen and normalized not in self.visited and is_valid_url(normalized):
-                                seen.add(normalized)
-                                results.append({
-                                    "url": normalized,
-                                    "source": "browser",
-                                    "status_code": None,
-                                    "content_type": "",
-                                    "depth": 2,
-                                })
-                        except Exception:
-                            continue
-                except Exception as e:
-                    logger.debug(f"Playwright sub-page crawl error: {e}")
-                    continue
-
-            logger.info(f"Playwright crawl complete: {len(results)} URLs discovered")
+            elapsed = time.time() - scan_start
+            logger.info(
+                f"Browser crawl complete: {pages_visited} pages, {len(results)} URLs, "
+                f"{len(api_endpoints)} APIs, {total_clicks} clicks in {elapsed:.1f}s"
+            )
+            await self._emit("browser_crawl_complete",
+                pages_visited=pages_visited, total_urls=len(results),
+                api_endpoints=len(api_endpoints), clicks=total_clicks,
+                duration=round(elapsed, 1))
 
         except Exception as e:
-            logger.error(f"Playwright crawl failed: {e}", exc_info=True)
+            logger.error(f"Browser crawl failed: {e}", exc_info=True)
         finally:
             try:
                 if browser:

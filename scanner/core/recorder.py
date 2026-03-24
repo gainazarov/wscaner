@@ -17,6 +17,7 @@ Session Management:
 """
 
 import asyncio
+import enum
 import logging
 import os
 import signal
@@ -420,6 +421,32 @@ RECORDING_TIMEOUT = 600  # 10 minutes max
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# State machine
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RecorderState(enum.Enum):
+    """Recorder session states — transitions enforced by guards."""
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "recording"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+    def __str__(self):
+        return self.value
+
+
+# Valid state transitions
+_TRANSITIONS = {
+    RecorderState.IDLE: {RecorderState.STARTING},
+    RecorderState.STARTING: {RecorderState.RUNNING, RecorderState.STOPPED},
+    RecorderState.RUNNING: {RecorderState.STOPPING, RecorderState.STOPPED},
+    RecorderState.STOPPING: {RecorderState.STOPPED},
+    RecorderState.STOPPED: {RecorderState.IDLE},
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Global recording session state
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -441,8 +468,43 @@ class RecorderSession:
         self._novnc_proc: Optional[subprocess.Popen] = None
         self._navigations: list[str] = []
         self._auto_timeout_task: Optional[asyncio.Task] = None
-        self.status = "starting"  # starting | recording | stopping | stopped
+        self._state = RecorderState.STARTING
         self.error: Optional[str] = None
+
+    @property
+    def status(self) -> str:
+        """String status for API compatibility."""
+        return str(self._state)
+
+    @status.setter
+    def status(self, value):
+        """Accept string assignments for backward compatibility."""
+        if isinstance(value, RecorderState):
+            self._transition(value)
+        else:
+            mapping = {s.value: s for s in RecorderState}
+            new_state = mapping.get(value)
+            if new_state:
+                self._transition(new_state)
+            else:
+                logger.warning(f"Invalid status value: {value}")
+
+    @property
+    def state(self) -> RecorderState:
+        return self._state
+
+    def _transition(self, new_state: RecorderState):
+        """Transition to a new state with guard check."""
+        allowed = _TRANSITIONS.get(self._state, set())
+        if new_state not in allowed:
+            logger.warning(
+                f"[{self.session_id}] Invalid state transition: "
+                f"{self._state} -> {new_state} (allowed: {allowed})"
+            )
+            return
+        old = self._state
+        self._state = new_state
+        logger.info(f"[{self.session_id}] State: {old} -> {new_state}")
 
     @property
     def elapsed(self) -> float:
@@ -703,10 +765,17 @@ async def start_recording(domain: str, start_url: str = "") -> dict:
         return {"success": False, "error": "Playwright not installed"}
 
     async with _session_lock:
+        # Guard: reject if there's already an active session
+        if _active_session and _active_session._state in (RecorderState.STARTING, RecorderState.RUNNING):
+            return {
+                "success": False,
+                "error": f"Recording already active (session={_active_session.session_id}, state={_active_session.status})",
+            }
+
         # Force-cleanup any stale/stuck session
         if _active_session:
             old = _active_session
-            logger.warning(f"Force-cleaning previous session {old.session_id} (status={old.status})")
+            logger.warning(f"Force-cleaning previous session {old.session_id} (state={old.status})")
             try:
                 if old._auto_timeout_task and not old._auto_timeout_task.done():
                     old._auto_timeout_task.cancel()
@@ -869,7 +938,7 @@ async def stop_recording(session_id: str) -> dict:
         session = _active_session
         if not session or session.session_id != session_id:
             # Clean up stale session if it exists
-            if _active_session and _active_session.status in ("stopping", "stopped"):
+            if _active_session and _active_session._state in (RecorderState.STOPPING, RecorderState.STOPPED):
                 try:
                     await _cleanup_session(_active_session)
                 except Exception:
@@ -877,9 +946,12 @@ async def stop_recording(session_id: str) -> dict:
                 _active_session = None
             return {"success": False, "error": f"Session {session_id} not found"}
 
-        if session.status == "stopped":
+        if session._state == RecorderState.STOPPED:
             _active_session = None
             return {"success": False, "error": "Session already stopped"}
+
+        if session._state not in (RecorderState.STARTING, RecorderState.RUNNING):
+            return {"success": False, "error": f"Cannot stop session in state {session.status}"}
 
         session.status = "stopping"
 
@@ -943,7 +1015,7 @@ async def get_recording_status(session_id: str = "") -> dict:
         return {"active": False, "status": "idle", "error": "Session mismatch"}
 
     # Detect stale sessions stuck in stopping for too long
-    if session.status in ("stopping", "stopped") and session.elapsed > RECORDING_TIMEOUT + 30:
+    if session._state in (RecorderState.STOPPING, RecorderState.STOPPED) and session.elapsed > RECORDING_TIMEOUT + 30:
         logger.warning(f"[{session.session_id}] Stale session, force cleanup")
         try:
             await _cleanup_session(session)
@@ -954,7 +1026,7 @@ async def get_recording_status(session_id: str = "") -> dict:
         return {"active": False, "status": "idle"}
 
     result = {
-        "active": session.status in ("starting", "recording"),
+        "active": session._state in (RecorderState.STARTING, RecorderState.RUNNING),
         "session_id": session.session_id,
         "status": session.status,
         "domain": session.domain,
@@ -963,7 +1035,7 @@ async def get_recording_status(session_id: str = "") -> dict:
     }
 
     # Get live event count from browser
-    if session.status == "recording" and session.page:
+    if session._state == RecorderState.RUNNING and session.page:
         try:
             count = await asyncio.wait_for(
                 session.page.evaluate("(window.__recordedEvents || []).length"),
@@ -998,7 +1070,7 @@ async def _inject_recorder(page: Page):
 
 async def _on_navigation(session: RecorderSession, frame):
     """Handle page navigation — re-inject JS and record it."""
-    if session.status != "recording":
+    if session._state != RecorderState.RUNNING:
         return
     try:
         page = session.page
@@ -1024,7 +1096,7 @@ async def _auto_timeout(session: RecorderSession):
     global _active_session
     try:
         await asyncio.sleep(RECORDING_TIMEOUT)
-        if session.status != "recording":
+        if session._state != RecorderState.RUNNING:
             return
         logger.warning(f"[{session.session_id}] Auto-timeout after {RECORDING_TIMEOUT}s")
 
