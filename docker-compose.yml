@@ -2,7 +2,7 @@ services:
   # Redis — message broker & cache
   redis:
     image: redis:7-alpine
-    restart: always
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -16,12 +16,13 @@ services:
   # Django Backend API
   backend:
     build: ./backend
-    restart: always
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
       - ./backend/.env
     environment:
+      - APP_MODE=local
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SCANNER_SERVICE_URL=http://scanner:8001
@@ -34,15 +35,16 @@ services:
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
-             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 4 --worker-class gthread --timeout 900"
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 2 --worker-class gthread --timeout 900"
 
   # Celery Worker
   celery:
     build: ./backend
-    restart: always
+    restart: unless-stopped
     env_file:
       - ./backend/.env
     environment:
+      - APP_MODE=local
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SCANNER_SERVICE_URL=http://scanner:8001
@@ -58,10 +60,11 @@ services:
   # Celery Beat — periodic task scheduler
   celery-beat:
     build: ./backend
-    restart: always
+    restart: unless-stopped
     env_file:
       - ./backend/.env
     environment:
+      - APP_MODE=local
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - SCANNER_SERVICE_URL=http://scanner:8001
@@ -74,14 +77,16 @@ services:
       - backend_data:/app/db
     command: sh -c "sleep 15 && celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
 
-  # Scanner Service
+  # Scanner Service (Playwright runs locally — user's IP & network)
   scanner:
     build: ./scanner
-    restart: always
+    restart: unless-stopped
     shm_size: '2gb'
     ports:
       - "127.0.0.1:8001:8001"
-      - "0.0.0.0:6080:6080"
+      - "127.0.0.1:6080:6080"
+    environment:
+      - SCAN_MODE=local
     volumes:
       - scanner_logs:/app/logs
     command: uvicorn main:app --host 0.0.0.0 --port 8001
@@ -92,7 +97,7 @@ services:
       context: ./frontend
       args:
         BACKEND_INTERNAL_URL: http://backend:8000
-    restart: always
+    restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
     environment:

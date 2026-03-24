@@ -1,5 +1,5 @@
 """
-Django settings for WScaner project.
+Django settings for WScaner project — Local-first architecture.
 """
 
 import os
@@ -8,6 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── App mode ─────────────────────────────────────────────────────────────────
+APP_MODE = os.getenv("APP_MODE", "local")  # "local" = local-first (default)
 
 
 # Enable WAL mode for SQLite to reduce "database is locked" errors
@@ -23,11 +26,12 @@ connection_created.connect(_enable_wal)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key-change-in-production")
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "local-dev-key-auto-generated")
 
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+# Local-first: accept all localhost variants
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0,*").split(",")
 
 # Application definition
 INSTALLED_APPS = [
@@ -128,11 +132,15 @@ REST_FRAMEWORK = {
     ],
 }
 
-# CORS
+# CORS — local-first: allow all localhost origins
 CORS_ALLOWED_ORIGINS = os.getenv(
-    "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://scaner123.ziyo.io"
+    "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
+
+# Local-first: also allow all origins in local mode
+if APP_MODE == "local":
+    CORS_ALLOW_ALL_ORIGINS = True
 
 # Celery
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")

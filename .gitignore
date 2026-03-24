@@ -21,7 +21,6 @@ db.sqlite3
 # Environment
 .env
 .env.local
-.env.production
 
 # IDE
 .idea/

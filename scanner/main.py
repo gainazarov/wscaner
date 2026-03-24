@@ -53,9 +53,11 @@ logger = setup_logging()
 
 
 async def health(request: Request) -> JSONResponse:
+    scan_mode = os.getenv("SCAN_MODE", "local")
     return JSONResponse({
         "status": "ok",
-        "service": "wscaner-scanner",
+        "service": "ziyo-scanner",
+        "mode": scan_mode,
         "playwright_available": _PLAYWRIGHT_AVAILABLE,
     })
 
