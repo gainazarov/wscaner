@@ -1834,6 +1834,8 @@ def auth_config_test(request):
                 "accessible_paths": result.get("accessible_paths", []),
                 "login_redirects": result.get("login_redirects", []),
                 "cookies_count": len(result.get("cookies", {})),
+                "storage_tokens_count": result.get("storage_tokens_count", len(result.get("storage_tokens", {}))),
+                "note": result.get("note", ""),
                 "warning": result.get("warning", ""),
             })
         else:
@@ -2110,6 +2112,19 @@ def auth_record_status(request):
         if session_id:
             params["session_id"] = session_id
         response = requests.get(scanner_url, params=params, timeout=10)
+        return Response(response.json(), status=response.status_code)
+    except requests.exceptions.ConnectionError:
+        return Response({"error": "Scanner service unavailable"}, status=503)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
+@api_view(["POST"])
+def auth_record_reset(request):
+    """Force-reset any active recording session. Proxies to scanner."""
+    try:
+        scanner_url = f"{settings.SCANNER_SERVICE_URL}/auth/record/reset"
+        response = requests.post(scanner_url, json={}, timeout=30)
         return Response(response.json(), status=response.status_code)
     except requests.exceptions.ConnectionError:
         return Response({"error": "Scanner service unavailable"}, status=503)

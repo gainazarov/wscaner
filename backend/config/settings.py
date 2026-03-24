@@ -1,5 +1,5 @@
 """
-Django settings for WScaner project — Local-first architecture.
+Django settings for WebSentinal project.
 """
 
 import os
@@ -9,29 +9,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── App mode ─────────────────────────────────────────────────────────────────
-APP_MODE = os.getenv("APP_MODE", "local")  # "local" = local-first (default)
-
-
-# Enable WAL mode for SQLite to reduce "database is locked" errors
-def _enable_wal(sender, connection, **kwargs):
-    if connection.vendor == "sqlite":
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL;")
-        cursor.execute("PRAGMA busy_timeout=30000;")
-
-
-from django.db.backends.signals import connection_created
-connection_created.connect(_enable_wal)
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "local-dev-key-auto-generated")
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key-change-in-production")
 
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
 
-# Local-first: accept all localhost variants
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0,*").split(",")
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 # Application definition
 INSTALLED_APPS = [
@@ -82,15 +66,11 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-# Database — SQLite stored in /app/db/ which is a Docker volume for persistence
-_default_db_path = str(BASE_DIR / "db" / "db.sqlite3") if os.path.isdir(str(BASE_DIR / "db")) else str(BASE_DIR / "db.sqlite3")
+# Database
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": os.getenv("SQLITE_PATH", _default_db_path),
-        "OPTIONS": {
-            "timeout": 30,  # Wait up to 30s for locks
-        },
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
@@ -133,15 +113,11 @@ REST_FRAMEWORK = {
     ],
 }
 
-# CORS — local-first: allow all localhost origins
+# CORS
 CORS_ALLOWED_ORIGINS = os.getenv(
-    "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
-
-# Local-first: also allow all origins in local mode
-if APP_MODE == "local":
-    CORS_ALLOW_ALL_ORIGINS = True
 
 # Celery
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")

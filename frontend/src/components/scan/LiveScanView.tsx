@@ -129,6 +129,12 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
   const [scanError, setScanError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authMethod, setAuthMethod] = useState<string | null>(null);
+  const [authStepProgress, setAuthStepProgress] = useState<{
+    step: number;
+    total: number;
+    action: string;
+    description: string;
+  } | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
   const [connected, setConnected] = useState(false);
   const [spaProgress, setSpaProgress] = useState<{
@@ -265,11 +271,22 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
 
         case "auth_success":
           setAuthMethod(event.method as string);
+          setAuthStepProgress(null);
           break;
 
         case "auth_error":
           setAuthError(event.error as string);
           setAuthMethod(event.method as string);
+          setAuthStepProgress(null);
+          break;
+
+        case "auth_step_progress":
+          setAuthStepProgress({
+            step: (event.step as number) || 0,
+            total: (event.total as number) || 0,
+            action: (event.action as string) || "",
+            description: (event.description as string) || "",
+          });
           break;
 
         case "auth_recrawl_progress":
@@ -508,7 +525,9 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
                     {phase.status === "running" && phase.name === "auth" && (
                       <span className="text-xs text-primary-400/70 ml-auto animate-pulse flex items-center gap-1">
                         <KeyRound className="w-3 h-3" />
-                        Авторизация…
+                        {authStepProgress
+                          ? `Шаг ${authStepProgress.step}/${authStepProgress.total}`
+                          : "Авторизация…"}
                       </span>
                     )}
                     {/* Private scan — done */}
@@ -560,6 +579,23 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
                           transition={{ duration: 0.3 }}
                         />
                       </div>
+                    </div>
+                  )}
+
+                  {/* Auth phase — step progress bar and description when running */}
+                  {phase.name === "auth" && phase.status === "running" && authStepProgress && (
+                    <div className="mt-2 ml-6">
+                      <div className="w-full bg-dark-700 rounded-full h-1.5 overflow-hidden mb-1.5">
+                        <motion.div
+                          className="h-full bg-gradient-to-r from-primary-500 to-primary-400 rounded-full"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${(authStepProgress.step / Math.max(authStepProgress.total, 1)) * 100}%` }}
+                          transition={{ duration: 0.3 }}
+                        />
+                      </div>
+                      <p className="text-[11px] text-dark-400 truncate">
+                        {authStepProgress.description}
+                      </p>
                     </div>
                   )}
 

@@ -261,9 +261,11 @@ export function ProjectSettings() {
         domain: selectedSite,
         start_url: homeUrl || loginUrl || undefined,
       });
-      // Auto-reset stale session and retry
-      if (!result.success && result.error?.includes("already active")) {
+      // If there's a stale session, auto-reset and retry once
+      if (!result.success && result.error?.includes("Recording already active")) {
         await api.resetRecording();
+        // Small delay to let cleanup finish
+        await new Promise((r) => setTimeout(r, 1000));
         result = await api.startRecording({
           domain: selectedSite,
           start_url: homeUrl || loginUrl || undefined,
@@ -1135,7 +1137,7 @@ export function ProjectSettings() {
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-dark-400 font-medium">Live Browser</span>
                           <button
-                            onClick={() => window.open(`${window.location.protocol}//${window.location.hostname}:6080/vnc.html?autoconnect=true&resize=remote&quality=9&compression=0&show_dot=true&view_only=false`, "_blank")}
+                            onClick={() => window.open("http://localhost:6080/vnc.html?autoconnect=true&resize=remote&quality=9&compression=0&show_dot=true&view_only=false", "_blank")}
                             className="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1"
                           >
                             <Globe className="w-3 h-3" /> Open in new tab
@@ -1143,7 +1145,7 @@ export function ProjectSettings() {
                         </div>
                         <div className="border border-dark-600 rounded-xl overflow-hidden bg-black">
                           <iframe
-                            src={`${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000&show_dot=true&view_only=false&quality=9&compression=0`}
+                            src="http://localhost:6080/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000&show_dot=true&view_only=false&quality=9&compression=0"
                             className="w-full border-0"
                             style={{ height: "700px" }}
                             title="Browser Recorder"
@@ -1480,23 +1482,40 @@ export function ProjectSettings() {
                           <p className="font-medium">Login successful!</p>
                           {authTestResult.method && (
                             <p className="text-xs mt-0.5 opacity-80">
-                              Method: {authTestResult.method === "playwright" ? "Headless Browser" : "HTTP Form"}
+                              Method: {authTestResult.method === "recorded_jwt" ? "Recorded Flow (JWT/Token)" : authTestResult.method === "recorded" ? "Recorded Flow" : authTestResult.method === "playwright" ? "Headless Browser" : authTestResult.method === "http" ? "HTTP Form" : authTestResult.method}
                             </p>
                           )}
-                          {authTestResult.pages_accessible !== undefined && (
-                            <p className="text-xs mt-0.5 opacity-80">
-                              {authTestResult.pages_accessible} protected page(s) accessible
-                            </p>
-                          )}
-                          {authTestResult.accessible_paths && authTestResult.accessible_paths.length > 0 && (
-                            <p className="text-xs mt-0.5 opacity-60">
-                              Paths: {authTestResult.accessible_paths.join(", ")}
-                            </p>
-                          )}
-                          {authTestResult.cookies_count !== undefined && (
-                            <p className="text-xs mt-0.5 opacity-60">
-                              {authTestResult.cookies_count} session cookie(s)
-                            </p>
+                          {authTestResult.method === "recorded_jwt" ? (
+                            <>
+                              {(authTestResult.storage_tokens_count ?? 0) > 0 && (
+                                <p className="text-xs mt-0.5 opacity-80">
+                                  {authTestResult.storage_tokens_count} auth token(s) detected
+                                </p>
+                              )}
+                              {authTestResult.note && (
+                                <p className="text-xs mt-0.5 opacity-60">
+                                  ℹ {authTestResult.note}
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {authTestResult.pages_accessible !== undefined && authTestResult.pages_accessible !== null && (
+                                <p className="text-xs mt-0.5 opacity-80">
+                                  {authTestResult.pages_accessible} protected page(s) accessible
+                                </p>
+                              )}
+                              {authTestResult.accessible_paths && authTestResult.accessible_paths.length > 0 && (
+                                <p className="text-xs mt-0.5 opacity-60">
+                                  Paths: {authTestResult.accessible_paths.join(", ")}
+                                </p>
+                              )}
+                              {authTestResult.cookies_count !== undefined && (
+                                <p className="text-xs mt-0.5 opacity-60">
+                                  {authTestResult.cookies_count} session cookie(s)
+                                </p>
+                              )}
+                            </>
                           )}
                           {authTestResult.warning && (
                             <p className="text-xs mt-1 text-yellow-400/80">

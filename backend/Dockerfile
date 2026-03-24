@@ -7,9 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create db directory for SQLite volume mount
-RUN mkdir -p /app/db
-
 RUN python manage.py collectstatic --noinput || true
 
 EXPOSE 8000

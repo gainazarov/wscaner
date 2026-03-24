@@ -49,6 +49,7 @@ urlpatterns = [
     path("auth/record/start/", views.auth_record_start, name="auth-record-start"),
     path("auth/record/stop/", views.auth_record_stop, name="auth-record-stop"),
     path("auth/record/status/", views.auth_record_status, name="auth-record-status"),
+    path("auth/record/reset/", views.auth_record_reset, name="auth-record-reset"),
     # Scanner logs
     path("logs/", views.scanner_logs, name="scanner-logs"),
     path("logs/files/", views.scanner_logs_files, name="scanner-logs-files"),

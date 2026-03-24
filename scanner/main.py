@@ -140,6 +140,18 @@ async def _run_authenticated_scan(
         "cookies": {},
     }
 
+    # Callback to stream auth step progress during login
+    async def _auth_step_cb(info: dict):
+        if event_queue:
+            await event_queue.put({
+                "type": "auth_step_progress",
+                "phase": "auth",
+                "step": info.get("step", 0),
+                "total": info.get("total", 0),
+                "action": info.get("action", ""),
+                "description": info.get("description", ""),
+            })
+
     try:
         async with aiohttp.ClientSession(
             connector=connector, timeout=timeout,
@@ -164,7 +176,7 @@ async def _run_authenticated_scan(
                     session.cookie_jar.clear()
                     try:
                         login_result = await asyncio.wait_for(
-                            perform_login(session, auth_config, domain),
+                            perform_login(session, auth_config, domain, on_step_progress=_auth_step_cb),
                             timeout=120,
                         )
                     except asyncio.TimeoutError:
@@ -183,7 +195,7 @@ async def _run_authenticated_scan(
             else:
                 try:
                     login_result = await asyncio.wait_for(
-                        perform_login(session, auth_config, domain),
+                        perform_login(session, auth_config, domain, on_step_progress=_auth_step_cb),
                         timeout=120,
                     )
                 except asyncio.TimeoutError:
@@ -698,6 +710,17 @@ async def scan_stream(request: Request) -> StreamingResponse:
 
                         from core.auth_helpers import recorded_flow_login, interactive_login
 
+                        # Callback to stream auth step progress to frontend
+                        async def _auth_step_cb(info: dict):
+                            await event_queue.put({
+                                "type": "auth_step_progress",
+                                "phase": "auth",
+                                "step": info.get("step", 0),
+                                "total": info.get("total", 0),
+                                "action": info.get("action", ""),
+                                "description": info.get("description", ""),
+                            })
+
                         if auth_type == "recorded":
                             steps = auth_config.get("recorded_steps", [])
                             username = auth_config.get("username", "")
@@ -705,7 +728,7 @@ async def scan_stream(request: Request) -> StreamingResponse:
                             logger.debug(f"Recorded flow: {len(steps)} steps, username='{username[:3]}***'")
                             logger.debug(f"Recorded steps summary: {[s.get('action','?') + ' ' + (s.get('selector','') or s.get('url',''))[:50] for s in steps]}")
                             login_result = await asyncio.wait_for(
-                                recorded_flow_login(steps=steps, username=username, password=password, domain=domain),
+                                recorded_flow_login(steps=steps, username=username, password=password, domain=domain, on_step_progress=_auth_step_cb),
                                 timeout=300,
                             )
                             logger.debug(f"Recorded flow result: success={login_result.get('success')}, "
@@ -724,6 +747,7 @@ async def scan_stream(request: Request) -> StreamingResponse:
                                     password_selector=auth_config.get("password_selector", ""),
                                     submit_selector=auth_config.get("submit_selector", ""),
                                     domain=domain,
+                                    on_step_progress=_auth_step_cb,
                                 ),
                                 timeout=300,
                             )

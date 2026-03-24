@@ -416,10 +416,12 @@ export interface AuthTestResult {
   status: "success" | "failed";
   message: string;
   method?: string;
-  pages_accessible?: number;
+  pages_accessible?: number | null;
   accessible_paths?: string[];
   login_redirects?: string[];
   cookies_count?: number;
+  storage_tokens_count?: number;
+  note?: string;
   warning?: string;
   playwright_available?: boolean;
   needs_selectors?: boolean;

@@ -15,7 +15,7 @@ import asyncio
 import logging
 import random
 import time
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -1001,6 +1001,7 @@ async def interactive_login(
     password_selector: str = "",
     submit_selector: str = "",
     domain: str = "",
+    on_step_progress: Optional[Callable] = None,
 ) -> dict:
     """
     Interactive Login flow using Playwright:
@@ -1052,6 +1053,8 @@ async def interactive_login(
 
             # Step 1: Navigate to homepage
             logger.info(f"Interactive login: navigating to {home_url}")
+            if on_step_progress:
+                await on_step_progress({"step": 1, "total": 6, "action": "goto", "description": f"Переход на {home_url}"})
             try:
                 await page.goto(home_url, wait_until="domcontentloaded", timeout=45000)
             except Exception as nav_err:
@@ -1065,6 +1068,8 @@ async def interactive_login(
             await asyncio.sleep(1)
 
             # Step 2: Find and click the login button
+            if on_step_progress:
+                await on_step_progress({"step": 2, "total": 6, "action": "click", "description": "Поиск кнопки входа"})
             login_btn = None
 
             if login_button_selector:
@@ -1102,6 +1107,8 @@ async def interactive_login(
 
             # Step 3: Wait for login form to appear
             # This handles modals, SPA rendering, and page redirects
+            if on_step_progress:
+                await on_step_progress({"step": 3, "total": 6, "action": "wait", "description": "Ожидание формы входа"})
             password_field_found = False
 
             for attempt in range(15):  # Wait up to ~15 seconds
@@ -1154,6 +1161,8 @@ async def interactive_login(
                 }
 
             # Step 4: Find and fill username field
+            if on_step_progress:
+                await on_step_progress({"step": 4, "total": 6, "action": "type", "description": "Ввод логина"})
             await asyncio.sleep(0.5)  # Brief stabilization wait
 
             username_el = None
@@ -1226,6 +1235,8 @@ async def interactive_login(
                 }
 
             # Step 5: Fill fields with human-like typing
+            if on_step_progress:
+                await on_step_progress({"step": 5, "total": 6, "action": "type", "description": "Ввод пароля"})
             await username_el.click()
             await asyncio.sleep(0.2)
             await username_el.fill("")
@@ -1241,6 +1252,8 @@ async def interactive_login(
             await asyncio.sleep(0.5)
 
             # Step 6: Find and click submit
+            if on_step_progress:
+                await on_step_progress({"step": 6, "total": 6, "action": "click", "description": "Отправка формы"})
             submit_el = None
             if submit_selector:
                 try:
@@ -1350,6 +1363,7 @@ async def recorded_flow_login(
     username: str = "",
     password: str = "",
     domain: str = "",
+    on_step_progress: Optional[Callable] = None,
 ) -> dict:
     """
     Replay a recorded login flow using Playwright.
@@ -1453,6 +1467,26 @@ async def recorded_flow_login(
                     pass
 
             logger.info(f"Recorded flow step {i + 1}/{len(steps)}: {action} {selector or value}")
+
+            # Emit step progress (without changing auth logic)
+            if on_step_progress:
+                is_credential = "USER_INPUT" in step.get("value", "") or "PASSWORD_INPUT" in step.get("value", "")
+                desc_map = {
+                    "goto": f"Переход на {value[:60]}",
+                    "click": f"Клик по {selector[:50]}",
+                    "type": "Ввод пароля" if is_credential and "PASSWORD" in step.get("value", "") else "Ввод логина" if is_credential else f"Ввод текста в {selector[:50]}",
+                    "wait": f"Ожидание {wait_ms}мс",
+                    "press": f"Нажатие {value}",
+                    "select": f"Выбор '{value}' в {selector[:50]}",
+                    "check": f"Чек {selector[:50]}",
+                    "wait_for": f"Ожидание элемента {selector[:50]}",
+                }
+                await on_step_progress({
+                    "step": i + 1,
+                    "total": len(steps),
+                    "action": action,
+                    "description": desc_map.get(action, f"{action} {selector or value}"[:60]),
+                })
 
             try:
                 # ── Check if page crashed before doing anything ──
@@ -1912,6 +1946,7 @@ async def perform_login(
     session: aiohttp.ClientSession,
     auth_config: dict,
     domain: str = "",
+    on_step_progress: Optional[Callable] = None,
 ) -> dict:
     """
     Perform login with automatic fallback:
@@ -1973,6 +2008,7 @@ async def perform_login(
                 username=username,
                 password=password,
                 domain=domain,
+                on_step_progress=on_step_progress,
             )
             last_result = result
 
@@ -2269,6 +2305,12 @@ async def test_auth_config(auth_config: dict, domain: str) -> dict:
                 logger.info(f"SPA/JWT auth detected for {domain} — skipping HTTP cookie verification")
                 result["method"] = "recorded_jwt"
                 result["note"] = "JWT/token-based auth — cookies not applicable"
+                result["pages_accessible"] = None  # not applicable for JWT
+                result["accessible_paths"] = []
+                result["login_redirects"] = []
+                result["cookies_count"] = 0
+                result["storage_tokens_count"] = len(storage_tokens)
+                result["warning"] = ""
                 return result
 
             base_url = f"https://{domain}"
@@ -2422,14 +2464,36 @@ async def debug_auth_login(auth_config: dict, domain: str) -> dict:
             return {"steps": steps, "success": False}
 
         add_step("playwright_init", "ok", "Playwright available, replaying recorded flow...")
-        result = await recorded_flow_login(
-            steps=recorded_steps,
-            username=username,
-            password=password,
-            domain=domain,
-        )
+
+        # Retry up to 3 times (matching perform_login retry logic)
+        result = None
+        for attempt in range(1, 4):
+            result = await recorded_flow_login(
+                steps=recorded_steps,
+                username=username,
+                password=password,
+                domain=domain,
+            )
+            if result.get("success"):
+                break
+            error_msg = result.get("error", "")
+            is_transient = any(kw in error_msg.lower() for kw in [
+                "has been closed", "target page", "browser",
+                "context", "connection refused", "timeout",
+                "no cookies", "chrome-error", "net::",
+            ])
+            if is_transient and attempt < 3:
+                add_step("recorded_flow_retry", "warning", f"Attempt {attempt} failed (transient): {error_msg}. Retrying...")
+                await asyncio.sleep(2)
+                continue
+            else:
+                break
+
         if result.get("success"):
-            add_step("recorded_flow", "ok", f"Recorded flow succeeded! Final URL: {result.get('final_url', '')}")
+            detail = f"Recorded flow succeeded! Final URL: {result.get('final_url', '')}"
+            if result.get("storage_tokens"):
+                detail += f" (JWT/token auth, {len(result['storage_tokens'])} token(s))"
+            add_step("recorded_flow", "ok", detail)
         else:
             add_step("recorded_flow", "failed", f"Recorded flow failed: {result.get('error', '')}")
 
