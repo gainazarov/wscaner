@@ -34,8 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout=600 --retries=3 -r requirements.txt
 
-# Install Playwright Chromium browser
-RUN playwright install chromium
+# Install Playwright Chromium browser (increased timeout for slow connections)
+ENV PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=300000
+RUN playwright install chromium || \
+    (sleep 10 && playwright install chromium) || \
+    (sleep 30 && playwright install chromium)
 
 COPY . .
 
