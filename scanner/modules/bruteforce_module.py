@@ -130,12 +130,13 @@ class BruteforceModule:
         "/nginx.conf",
     ]
 
-    CONCURRENCY = 20
+    CONCURRENCY = 3  # Low concurrency to avoid rate limiting
 
     async def run(
         self, base_url: str, session: aiohttp.ClientSession, domain: str
     ) -> list[dict]:
         """Try all common paths and report what exists."""
+        import random
         results: list[dict] = []
         seen: set[str] = set()
 
@@ -151,11 +152,13 @@ class BruteforceModule:
             seen.add(normalized)
 
             async with semaphore:
+                # Random delay between requests to avoid detection
+                await asyncio.sleep(random.uniform(0.2, 1.0))
                 try:
                     async with session.get(
                         url,
                         allow_redirects=False,
-                        timeout=aiohttp.ClientTimeout(total=5),
+                        timeout=aiohttp.ClientTimeout(total=8),
                     ) as response:
                         status_code = response.status
                         content_type = response.headers.get("Content-Type", "")

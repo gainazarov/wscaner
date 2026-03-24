@@ -501,12 +501,112 @@ async def crawl_spa(
         else:
             logger.warning("SPA crawler: no cookies to inject!")
 
-        # ── Stealth setup ───────────────────────────────────────────────
+        # ── Stealth setup — comprehensive anti-detection ────────────────
         await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => false});
-            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            // Hide webdriver flag
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+
+            // Chrome runtime
+            window.chrome = {
+                runtime: {
+                    onConnect: { addListener: function(){} },
+                    onMessage: { addListener: function(){} },
+                    connect: function(){ return { onMessage: { addListener: function(){} }, postMessage: function(){} }; },
+                    sendMessage: function(){},
+                    id: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'
+                },
+                loadTimes: function(){ return {}; },
+                csi: function(){ return {}; }
+            };
+
+            // Realistic plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const plugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                    ];
+                    plugins.length = 3;
+                    return plugins;
+                }
+            });
+
+            // Languages
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'ru']});
+            Object.defineProperty(navigator, 'language', {get: () => 'en-US'});
+
+            // Platform
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+
+            // Hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+
+            // Device memory
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+
+            // Max touch points
+            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
+
+            // Connection
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false,
+                })
+            });
+
+            // Permissions API
+            const originalQuery = window.Notification && Notification.permission;
+            if (navigator.permissions) {
+                const origQuery = navigator.permissions.query;
+                navigator.permissions.query = (parameters) => {
+                    if (parameters.name === 'notifications') {
+                        return Promise.resolve({state: originalQuery || 'prompt'});
+                    }
+                    return origQuery.call(navigator.permissions, parameters);
+                };
+            }
+
+            // WebGL vendor/renderer
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+                if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return getParameter.call(this, parameter);
+            };
+
+            // Prevent iframe detection
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+                get: function() { return window; }
+            });
+
+            // Fix toString for overridden functions
+            const nativeToString = Function.prototype.toString;
+            const proxyHandler = {
+                apply: function(target, thisArg, args) {
+                    if (args[0] === navigator.webdriver) return 'function webdriver() { [native code] }';
+                    return nativeToString.call(thisArg);
+                }
+            };
+
+            // Pass Cloudflare checks: canvas fingerprint noise
+            const origGetContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+                const ctx = origGetContext.call(this, type, attrs);
+                if (type === '2d' && ctx) {
+                    const origFillText = ctx.fillText;
+                    ctx.fillText = function() {
+                        // Add tiny invisible noise to canvas fingerprinting
+                        arguments[1] = arguments[1] + 0.0000001;
+                        return origFillText.apply(this, arguments);
+                    };
+                }
+                return ctx;
+            };
         """)
 
         page = await context.new_page()

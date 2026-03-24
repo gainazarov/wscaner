@@ -783,10 +783,26 @@ async def start_recording(domain: str, start_url: str = "") -> dict:
         page = await context.new_page()
         session.page = page
 
-        # Anti-detection
+        # Anti-detection — comprehensive stealth
         await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             delete navigator.__proto__.webdriver;
+            window.chrome = {
+                runtime: { id: 'x', onConnect: {addListener:function(){}}, onMessage: {addListener:function(){}} },
+                loadTimes: function(){return {};},
+                csi: function(){return {};}
+            };
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const p = [{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'},{name:'Native Client'}];
+                    p.length = 3;
+                    return p;
+                }
+            });
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'ru']});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
         """)
 
         # Step 6: Navigate to target
