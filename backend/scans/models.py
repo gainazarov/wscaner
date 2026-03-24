@@ -27,11 +27,22 @@ def encrypt_value(plaintext: str) -> str:
 
 
 def decrypt_value(ciphertext: str) -> str:
-    """Decrypt a base64 ciphertext back to string."""
+    """Decrypt a base64 ciphertext back to string.
+    
+    Returns empty string if decryption fails (e.g. SECRET_KEY changed).
+    """
     if not ciphertext:
         return ""
-    f = _get_fernet()
-    return f.decrypt(ciphertext.encode()).decode()
+    try:
+        f = _get_fernet()
+        return f.decrypt(ciphertext.encode()).decode()
+    except Exception:
+        import logging
+        logging.getLogger("scans.models").warning(
+            "Failed to decrypt value — SECRET_KEY may have changed. "
+            "Re-save the password to fix this."
+        )
+        return ""
 
 
 class Scan(models.Model):

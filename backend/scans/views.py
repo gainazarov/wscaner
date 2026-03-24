@@ -570,6 +570,9 @@ def scan_stream(request, scan_id):
             logger.info(f"Scan #{scan.id} SSE: auth enabled ({auth_cfg.auth_type})")
     except SiteAuthConfig.DoesNotExist:
         pass
+    except Exception as e:
+        logger.warning(f"Scan #{scan.id} SSE: auth config error: {e}. Scanning without auth.")
+        auth_payload = None
 
     def stream_proxy():
         """POST to scanner service and relay the SSE chunks."""
