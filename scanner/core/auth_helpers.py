@@ -116,12 +116,56 @@ _SUBMIT_SELECTORS = [
 ]
 
 _LOGIN_FAIL_INDICATORS = [
-    "invalid", "incorrect", "wrong", "failed", "error",
-    "неверный", "ошибка", "неправильный", "не найден",
-    "unauthorized", "denied", "bad credentials",
-    "try again", "попробуйте снова",
-    "please enter a correct", "login failed",
+    "invalid password", "invalid credentials", "invalid login",
+    "incorrect password", "incorrect username", "incorrect email",
+    "wrong password", "wrong credentials",
+    "login failed", "authentication failed",
+    "bad credentials", "access denied",
+    "неверный пароль", "неверный логин", "неверные данные",
+    "неправильный пароль", "ошибка авторизации",
+    "попробуйте снова", "try again",
+    "please enter a correct",
 ]
+
+
+async def _get_visible_text(page) -> str:
+    """Extract only visible text from a Playwright page (excludes JS bundles, hidden elements)."""
+    try:
+        visible_text = await page.evaluate("""
+            () => {
+                // Get text from visible error-like elements first
+                const errorSelectors = [
+                    '.error', '.alert', '.alert-danger', '.alert-error',
+                    '.error-message', '.form-error', '.field-error',
+                    '.invalid-feedback', '.help-block.error',
+                    '[role="alert"]', '.notification-error',
+                    '.toast-error', '.message-error',
+                    '.text-danger', '.text-error',
+                ];
+                let errorText = '';
+                for (const sel of errorSelectors) {
+                    const els = document.querySelectorAll(sel);
+                    for (const el of els) {
+                        if (el.offsetParent !== null || el.style.display !== 'none') {
+                            errorText += ' ' + (el.innerText || el.textContent || '');
+                        }
+                    }
+                }
+                // Get general visible body text (innerText excludes script/style)
+                const bodyText = document.body ? document.body.innerText : '';
+                return (errorText + ' ||| ' + bodyText).substring(0, 5000);
+            }
+        """)
+        return visible_text.lower() if visible_text else ""
+    except Exception:
+        return ""
+
+
+def _check_error_in_visible_text(visible_text: str, patterns: list[str]) -> bool:
+    """Check if any error pattern appears in visible text (not full HTML)."""
+    if not visible_text:
+        return False
+    return any(p in visible_text for p in patterns)
 
 # Sensitive page path patterns
 SENSITIVE_PAGE_PATTERNS = [
@@ -517,8 +561,17 @@ async def http_form_login(
                 f"still_on_login={still_on_login_page}"
             )
 
-            # Determine success
-            if has_error:
+            # Determine success — prioritise positive signals over error text
+            # (HTTP responses are server-rendered, less prone to JS false positives)
+            if has_new_cookies and (is_redirect_away or has_dashboard):
+                return {
+                    "success": True,
+                    "cookies": cookies,
+                    "method": "http",
+                    "final_url": final_url,
+                }
+
+            if has_error and not has_new_cookies and not has_dashboard:
                 return {"success": False, "error": "Invalid credentials or form error detected", "method": "http"}
 
             if still_on_login_page and not is_redirect_away and not has_dashboard:
@@ -820,9 +873,11 @@ async def playwright_form_login(
             page_content = await page.content()
             body_lower = page_content.lower()
 
-            has_error = any(w in body_lower for w in _LOGIN_FAIL_INDICATORS)
+            # Use visible text for error detection (avoids false positives from JS bundles)
+            visible_text = await _get_visible_text(page)
+            has_error = _check_error_in_visible_text(visible_text, _LOGIN_FAIL_INDICATORS)
             has_dashboard = any(
-                w in body_lower
+                w in (visible_text or body_lower)
                 for w in ["dashboard", "welcome", "logout", "sign out", "my account",
                           "панель", "выйти", "профиль"]
             )
@@ -854,8 +909,17 @@ async def playwright_form_login(
                 f"still_on_login={still_on_login_page} content_changed={content_changed}"
             )
 
-            # Definite failure: explicit error or still on login page with no change
-            if has_error:
+            # Prioritise positive signals — new cookies + redirect = success
+            if has_new_cookies and (is_redirect_away or has_dashboard):
+                return {
+                    "success": True,
+                    "cookies": cookies,
+                    "method": "playwright",
+                    "final_url": final_url,
+                }
+
+            # Definite failure: explicit error in visible text and no positive signals
+            if has_error and not has_new_cookies and not has_dashboard:
                 return {"success": False, "error": "Invalid credentials detected in browser", "method": "playwright"}
 
             if still_on_login_page and not is_redirect_away and not has_dashboard:
@@ -1228,9 +1292,11 @@ async def interactive_login(
             page_content = await page.content()
             body_lower = page_content.lower()
 
-            has_error = any(w in body_lower for w in _LOGIN_FAIL_INDICATORS)
+            # Use visible text for error detection (avoids false positives from JS bundles)
+            visible_text = await _get_visible_text(page)
+            has_error = _check_error_in_visible_text(visible_text, _LOGIN_FAIL_INDICATORS)
             has_dashboard = any(
-                w in body_lower
+                w in (visible_text or body_lower)
                 for w in ["dashboard", "welcome", "logout", "sign out", "my account",
                           "панель", "выйти", "профиль"]
             )
@@ -1246,7 +1312,8 @@ async def interactive_login(
                 f"cookies={len(cookies)} error={has_error} dashboard={has_dashboard}"
             )
 
-            if cookies and (is_redirect_away or has_dashboard) and not has_error:
+            # Prioritise positive signals
+            if cookies and (is_redirect_away or has_dashboard):
                 return {
                     "success": True,
                     "cookies": cookies,
@@ -1263,7 +1330,7 @@ async def interactive_login(
                 }
             else:
                 msg = "Interactive login failed"
-                if has_error:
+                if has_error and not cookies:
                     msg = "Invalid credentials detected after interactive login"
                 elif not cookies:
                     msg = "No cookies set after interactive login"
@@ -1336,6 +1403,7 @@ async def recorded_flow_login(
     all_cookie_names: list[str] = []
     final_url = ""
     body_lower = ""
+    visible_text = ""
     storage_tokens: dict = {}
     pre_login_cookie_names: set[str] = set()
 
@@ -1670,6 +1738,13 @@ async def recorded_flow_login(
         except Exception:
             logger.warning("Recorded flow: could not get page content (page closed)")
 
+        # 4b. Visible text (innerText — excludes JS bundles, hidden elements)
+        try:
+            visible_text = await _get_visible_text(page)
+            logger.info(f"Recorded flow: visible_text length={len(visible_text)}, first 200 chars: {visible_text[:200]}")
+        except Exception:
+            logger.warning("Recorded flow: could not get visible text (page closed)")
+
         # 5. Storage tokens (JWT etc.)
         try:
             storage_data = await page.evaluate("""
@@ -1727,17 +1802,17 @@ async def recorded_flow_login(
         "bad credentials", "access denied",
         "неверный пароль", "неверный логин", "неверные данные",
         "неправильный пароль", "ошибка авторизации",
-        "попробуйте снова", "try again",
         "please enter a correct",
     ]
-    has_explicit_error = any(p in body_lower for p in _EXPLICIT_FAIL_PATTERNS) if body_lower else False
+    # Use visible_text (extracted via innerText) — NOT full HTML which includes JS bundles
+    has_explicit_error = _check_error_in_visible_text(visible_text, _EXPLICIT_FAIL_PATTERNS)
 
     has_dashboard = any(
-        w in body_lower
+        w in (visible_text or body_lower)
         for w in ["dashboard", "welcome", "logout", "sign out", "my account",
                   "панель", "выйти", "профиль", "admin", "settings",
                   "настройки", "управление"]
-    ) if body_lower else False
+    )
 
     login_url_indicators = ["login", "signin", "sign-in", "auth", "вход"]
     first_step_url = ""
@@ -1755,8 +1830,14 @@ async def recorded_flow_login(
         f"redirected_away={redirected_away} failed_steps={failed_steps}/{len(steps)}"
     )
 
+    # Check visible text for login page indicators, not full HTML
     still_on_login_page = False
-    if body_lower:
+    if visible_text:
+        still_on_login_page = any(
+            w in visible_text
+            for w in ["sign in", "log in", "войти", "авторизация"]
+        ) and not has_dashboard
+    elif body_lower:
         still_on_login_page = (
             ('type="password"' in body_lower or "type='password'" in body_lower)
             and any(w in body_lower for w in ["sign in", "log in", "login", "войти", "авторизация", "вход"])
@@ -1769,15 +1850,12 @@ async def recorded_flow_login(
     logger.info(
         f"Recorded flow: pre_cookies={len(pre_login_cookie_names)} "
         f"post_cookies={len(post_cookie_names)} new_cookies={len(new_cookie_names)} "
-        f"still_on_login_page={still_on_login_page}"
+        f"still_on_login_page={still_on_login_page} visible_text_len={len(visible_text)}"
     )
 
     login_success = False
-    if has_explicit_error:
-        login_success = False
-    elif still_on_login_page and not redirected_away and not has_dashboard:
-        login_success = False
-    elif has_new_cookies and (redirected_away or has_dashboard or not still_on_login_page):
+    # Priority 1: Positive signals FIRST — new cookies + navigation = success
+    if has_new_cookies and (redirected_away or has_dashboard or not still_on_login_page):
         login_success = True
     elif storage_tokens:
         login_success = True
@@ -1787,6 +1865,13 @@ async def recorded_flow_login(
         login_success = True
     elif cookies and not still_on_login_page and (redirected_away or has_dashboard):
         login_success = True
+    elif cookies and has_new_cookies and not has_explicit_error:
+        login_success = True
+    # Priority 2: Negative signals only when no positive signals
+    elif has_explicit_error:
+        login_success = False
+    elif still_on_login_page and not redirected_away and not has_dashboard:
+        login_success = False
 
     if login_success:
         return {
