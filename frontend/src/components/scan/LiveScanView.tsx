@@ -150,6 +150,8 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
   const urlCounter = useRef(0);
   const feedRef = useRef<HTMLDivElement>(null);
   const spaLogRef = useRef<HTMLDivElement>(null);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   const updatePhase = useCallback(
     (phaseName: string, update: Partial<PhaseInfo>) => {
@@ -353,13 +355,13 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
         case "scan_fully_complete":
           // Everything done including reputation checks
           setScanDone(true);
-          if (onComplete) setTimeout(onComplete, 2000);
+          if (onCompleteRef.current) setTimeout(onCompleteRef.current, 2000);
           break;
 
         case "scan_already_done":
           setScanDone(true);
           setTotalUrls((event.total_urls as number) || 0);
-          if (onComplete) onComplete();
+          if (onCompleteRef.current) onCompleteRef.current();
           break;
 
         case "scan_error":
@@ -403,7 +405,7 @@ export function LiveScanView({ scanId, domain, onComplete }: LiveScanViewProps) 
       controller.abort();
       if (reader) reader.cancel();
     };
-  }, [scanId, onComplete, updatePhase]);
+  }, [scanId, updatePhase]);
 
   /* auto-scroll feed */
   useEffect(() => {

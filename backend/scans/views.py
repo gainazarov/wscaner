@@ -549,19 +549,26 @@ def scan_stream(request, scan_id):
             if auth_cfg is None:
                 # Log all available configs for debugging
                 all_configs = list(SiteAuthConfig.objects.values_list('domain', 'is_enabled', 'auth_type'))
-                logger.info(
-                    f"Scan #{scan.id} SSE: no auth config for '{scan_domain}'. "
-                    f"Available configs: {all_configs}"
+                logger.warning(
+                    f"Scan #{scan.id}: NO auth config for '{scan_domain}'. "
+                    f"DB configs: {all_configs}"
                 )
                 raise SiteAuthConfig.DoesNotExist()
+            else:
+                logger.warning(f"Scan #{scan.id}: auth config found via iexact fallback: '{auth_cfg.domain}'")
 
         if auth_cfg.auth_type != "none":
+            password = ""
+            try:
+                password = auth_cfg.get_password() or ""
+            except Exception as pw_err:
+                logger.warning(f"Scan #{scan.id}: get_password() failed: {pw_err}")
             auth_payload = {
                 "auth_type": auth_cfg.auth_type,
                 "auth_strategy": auth_cfg.auth_strategy or "auto",
                 "login_url": auth_cfg.login_url,
                 "username": auth_cfg.username,
-                "password": auth_cfg.get_password() or "",
+                "password": password,
                 "username_selector": auth_cfg.username_selector,
                 "password_selector": auth_cfg.password_selector,
                 "submit_selector": auth_cfg.submit_selector,
@@ -584,13 +591,18 @@ def scan_stream(request, scan_id):
                 from django.utils import timezone as tz
                 if auth_cfg.session_valid_until and auth_cfg.session_valid_until > tz.now():
                     auth_payload["saved_session_cookies"] = auth_cfg.session_cookies
-            logger.info(f"Scan #{scan.id} SSE: auth enabled ({auth_cfg.auth_type}), domain='{auth_cfg.domain}'")
+            logger.warning(
+                f"Scan #{scan.id}: AUTH ENABLED type={auth_cfg.auth_type} domain='{auth_cfg.domain}' "
+                f"has_steps={bool(auth_cfg.recorded_steps)} has_password={bool(password)}"
+            )
         else:
-            logger.info(f"Scan #{scan.id} SSE: auth config found but type='none', skipping auth")
+            logger.warning(f"Scan #{scan.id}: auth config found but type='none', skipping auth")
     except SiteAuthConfig.DoesNotExist:
-        logger.info(f"Scan #{scan.id} SSE: no auth config found for domain '{scan.domain}', scanning without auth")
+        logger.warning(f"Scan #{scan.id}: no auth config for domain '{scan.domain}' — scanning without auth")
     except Exception as e:
-        logger.warning(f"Scan #{scan.id} SSE: auth config error: {e}. Scanning without auth.")
+        logger.warning(f"Scan #{scan.id}: auth config ERROR: {type(e).__name__}: {e}")
+        import traceback
+        logger.warning(traceback.format_exc())
         auth_payload = None
 
     def stream_proxy():
