@@ -23,34 +23,91 @@ echo.
 :: -- 1a. Check Git --
 echo [...] Checking Git...
 where git >nul 2>nul
+if errorlevel 1 goto install_git
+echo [OK] Git found
+goto git_done
+
+:install_git
+echo [!!] Git is not installed.
+echo.
+echo [i] Attempting to install Git automatically...
+echo.
+
+:: Try winget first
+where winget >nul 2>nul
+if errorlevel 1 goto git_no_winget
+
+echo [...] Installing Git via winget...
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+if errorlevel 1 goto git_no_winget
+
+:: Refresh PATH after install
+set "PATH=%PATH%;C:\Program Files\Git\cmd"
+where git >nul 2>nul
 if errorlevel 1 (
-    echo [!!] Git is not installed.
-    echo.
-    echo     Please install Git from:
-    echo     https://git-scm.com/downloads
-    echo.
-    echo     After installing, run this script again.
-    echo.
+    echo [!!] Git installed but requires a restart of this script.
+    echo     Please close and re-run start.bat
     pause
     exit /b 1
 )
-echo [OK] Git found
+echo [OK] Git installed successfully
+goto git_done
+
+:git_no_winget
+echo [i] winget not available. Opening Git download page...
+start "" "https://git-scm.com/downloads"
+echo.
+echo     Please install Git from the opened page.
+echo     After installing, close this window and run start.bat again.
+echo.
+pause
+exit /b 1
+
+:git_done
 
 :: -- 1b. Check Docker --
 echo [...] Checking Docker...
 where docker >nul 2>nul
-if errorlevel 1 (
-    echo [!!] Docker is not installed.
-    echo.
-    echo     Please install Docker Desktop from:
-    echo     https://www.docker.com/products/docker-desktop/
-    echo.
-    echo     After installing, run this script again.
-    echo.
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto install_docker
 echo [OK] Docker found
+goto docker_found
+
+:install_docker
+echo [!!] Docker is not installed.
+echo.
+echo [i] Attempting to install Docker Desktop automatically...
+echo.
+
+:: Try winget first
+where winget >nul 2>nul
+if errorlevel 1 goto docker_no_winget
+
+echo [...] Installing Docker Desktop via winget...
+echo     This may take several minutes...
+winget install --id Docker.DockerDesktop -e --source winget --accept-package-agreements --accept-source-agreements
+if errorlevel 1 goto docker_no_winget
+
+echo.
+echo [OK] Docker Desktop installed.
+echo [!!] A system RESTART may be required for Docker to work.
+echo.
+echo     After restarting, run start.bat again.
+echo.
+pause
+exit /b 0
+
+:docker_no_winget
+echo [i] winget not available. Opening Docker download page...
+start "" "https://www.docker.com/products/docker-desktop/"
+echo.
+echo     Download and install Docker Desktop from the opened page.
+echo     A system restart may be required after installation.
+echo     Then run start.bat again.
+echo.
+pause
+exit /b 1
+
+:docker_found
 
 :: -- 1c. Check Docker running --
 echo [...] Checking Docker daemon...

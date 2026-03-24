@@ -72,17 +72,70 @@ else
     echo -e "${CROSS} Docker is not installed."
     echo ""
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo -e "${INFO} Please install Docker Desktop for Mac:"
+        # Check if Homebrew is available for auto-install
+        if command -v brew &>/dev/null; then
+            echo -e "${INFO} Installing Docker Desktop via Homebrew..."
+            brew install --cask docker
+            if [ $? -eq 0 ]; then
+                echo -e "${CHECK} Docker Desktop installed"
+                echo -e "${INFO} Starting Docker Desktop for the first time..."
+                open -a "Docker"
+                echo -ne "${WAIT} Waiting for Docker to initialize (first launch takes 1-2 min) "
+                RETRIES=0
+                while ! command -v docker &>/dev/null || ! docker info &>/dev/null 2>&1; do
+                    echo -n "."
+                    sleep 5
+                    RETRIES=$((RETRIES + 1))
+                    if [ $RETRIES -gt 60 ]; then
+                        echo ""
+                        echo -e "${CROSS} Docker is taking too long to start."
+                        echo -e "    Please open Docker Desktop manually and run this script again."
+                        read -p "Press Enter to exit..."
+                        exit 1
+                    fi
+                done
+                echo ""
+                DOCKER_VER=$(docker --version | awk '{print $3}' | tr -d ',')
+                echo -e "${CHECK} Docker is ready: v${DOCKER_VER}"
+            else
+                echo -e "${CROSS} Homebrew install failed. Opening download page..."
+                open "https://www.docker.com/products/docker-desktop/"
+                echo ""
+                echo -e "    ${BOLD}Install Docker Desktop from the opened page.${NC}"
+                echo -e "${DIM}    After installing, run this script again.${NC}"
+                read -p "Press Enter to exit..."
+                exit 1
+            fi
+        else
+            echo -e "${INFO} Opening Docker Desktop download page..."
+            open "https://www.docker.com/products/docker-desktop/"
+            echo ""
+            echo -e "    ${BOLD}Download and install Docker Desktop from the opened page.${NC}"
+            echo -e "${DIM}    Drag Docker to Applications, then launch it.${NC}"
+            echo ""
+            read -p "    Press Enter after you've installed and started Docker..."
+            echo ""
+            if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+                DOCKER_VER=$(docker --version | awk '{print $3}' | tr -d ',')
+                echo -e "${CHECK} Docker detected: v${DOCKER_VER}"
+            else
+                echo -e "${CROSS} Docker still not detected."
+                echo -e "    Make sure Docker Desktop is installed and running, then try again."
+                read -p "Press Enter to exit..."
+                exit 1
+            fi
+        fi
     else
-        echo -e "${INFO} Please install Docker Desktop:"
+        echo -e "${INFO} Install Docker for your Linux distribution:"
+        echo ""
+        echo "    Ubuntu/Debian: https://docs.docker.com/engine/install/ubuntu/"
+        echo "    Fedora:        https://docs.docker.com/engine/install/fedora/"
+        echo "    Or install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        echo ""
+        echo -e "${DIM}    After installing, run this script again.${NC}"
+        read -p "Press Enter to exit..."
+        exit 1
     fi
-    echo ""
-    echo -e "    ${BOLD}https://www.docker.com/products/docker-desktop/${NC}"
-    echo ""
-    echo -e "${DIM}    After installing, run this script again.${NC}"
-    echo ""
-    read -p "Press Enter to exit..."
-    exit 1
 fi
 
 # ── 1c. Check Docker is running ──
