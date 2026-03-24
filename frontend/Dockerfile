@@ -33,7 +33,5 @@ EXPOSE 3000
 
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-# Backend URL for API proxy middleware (set via docker-compose environment)
-ENV BACKEND_INTERNAL_URL=http://backend:8000
 
 CMD ["node", "server.js"]
