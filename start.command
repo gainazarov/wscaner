@@ -35,7 +35,7 @@ cd "$SCRIPT_DIR"
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 1: Check & Install Prerequisites
 # ═══════════════════════════════════════════════════════════════════════════════
-echo -e "${CYAN}─── Step 1/4: Checking prerequisites ───────────────────${NC}"
+echo -e "${CYAN}─── Step 1/5: Checking prerequisites ───────────────────${NC}"
 echo ""
 
 # ── 1a. Check Git ──
@@ -128,21 +128,20 @@ else
     exit 1
 fi
 
+echo -e "${INFO} Redis will run automatically inside Docker (no local install needed)"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2: Clone or update project
 # ═══════════════════════════════════════════════════════════════════════════════
-echo -e "${CYAN}─── Step 2/4: Project setup ────────────────────────────${NC}"
+echo -e "${CYAN}─── Step 2/5: Project setup ────────────────────────────${NC}"
 echo ""
 
 # Determine if we're already inside the project
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ] && [ -d "$SCRIPT_DIR/backend" ] && [ -d "$SCRIPT_DIR/scanner" ]; then
-    # We're inside the project directory already
     PROJECT_DIR="$SCRIPT_DIR"
     echo -e "${CHECK} Project found in current directory"
 
-    # Pull latest changes
     echo -e "${WAIT} Checking for updates..."
     if git -C "$PROJECT_DIR" rev-parse --git-dir &>/dev/null 2>&1; then
         CURRENT_HASH=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -158,7 +157,6 @@ if [ -f "$SCRIPT_DIR/docker-compose.yml" ] && [ -d "$SCRIPT_DIR/backend" ] && [ 
         }
     fi
 else
-    # Not inside project — need to clone
     PARENT_DIR="$SCRIPT_DIR"
     PROJECT_DIR="$PARENT_DIR/$PROJECT_DIR_NAME"
 
@@ -183,9 +181,126 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 3: Build & Start containers (with progress)
+# STEP 3: Configure API keys (backend/.env)
 # ═══════════════════════════════════════════════════════════════════════════════
-echo -e "${CYAN}─── Step 3/4: Building & starting services ─────────────${NC}"
+echo -e "${CYAN}─── Step 3/5: Configuration ────────────────────────────${NC}"
+echo ""
+
+ENV_FILE="$PROJECT_DIR/backend/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    # .env exists — check if API keys are already set
+    EXISTING_GOOGLE=$(grep -oP '(?<=GOOGLE_SAFE_BROWSING_API_KEY=).+' "$ENV_FILE" 2>/dev/null || true)
+    EXISTING_VT=$(grep -oP '(?<=VIRUSTOTAL_API_KEY=).+' "$ENV_FILE" 2>/dev/null || true)
+
+    if [ -n "$EXISTING_GOOGLE" ] && [ -n "$EXISTING_VT" ]; then
+        echo -e "${CHECK} API keys already configured"
+        echo -e "${DIM}    Google Safe Browsing: ${EXISTING_GOOGLE:0:10}...${NC}"
+        echo -e "${DIM}    VirusTotal:           ${EXISTING_VT:0:10}...${NC}"
+    else
+        echo -e "${INFO} API keys are not set. Let's configure them."
+        echo -e "${DIM}    These are needed for domain reputation checks.${NC}"
+        echo -e "${DIM}    You can skip by pressing Enter (features will be disabled).${NC}"
+        echo ""
+
+        if [ -z "$EXISTING_GOOGLE" ]; then
+            echo -e "${CYAN}  Google Safe Browsing API Key${NC}"
+            echo -e "${DIM}    Get it free: https://developers.google.com/safe-browsing/v4/get-started${NC}"
+            read -p "  → Enter key (or press Enter to skip): " INPUT_GOOGLE
+            if [ -n "$INPUT_GOOGLE" ]; then
+                if grep -q "GOOGLE_SAFE_BROWSING_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                    sed -i.bak "s|GOOGLE_SAFE_BROWSING_API_KEY=.*|GOOGLE_SAFE_BROWSING_API_KEY=${INPUT_GOOGLE}|" "$ENV_FILE"
+                else
+                    echo "GOOGLE_SAFE_BROWSING_API_KEY=${INPUT_GOOGLE}" >> "$ENV_FILE"
+                fi
+                echo -e "${CHECK} Google Safe Browsing API key saved"
+            else
+                echo -e "${DIM}    Skipped — you can add it later in backend/.env${NC}"
+            fi
+            echo ""
+        fi
+
+        if [ -z "$EXISTING_VT" ]; then
+            echo -e "${CYAN}  VirusTotal API Key${NC}"
+            echo -e "${DIM}    Get it free: https://www.virustotal.com/gui/my-apikey${NC}"
+            read -p "  → Enter key (or press Enter to skip): " INPUT_VT
+            if [ -n "$INPUT_VT" ]; then
+                if grep -q "VIRUSTOTAL_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                    sed -i.bak "s|VIRUSTOTAL_API_KEY=.*|VIRUSTOTAL_API_KEY=${INPUT_VT}|" "$ENV_FILE"
+                else
+                    echo "VIRUSTOTAL_API_KEY=${INPUT_VT}" >> "$ENV_FILE"
+                fi
+                echo -e "${CHECK} VirusTotal API key saved"
+            else
+                echo -e "${DIM}    Skipped — you can add it later in backend/.env${NC}"
+            fi
+        fi
+
+        # Clean up sed backup files (macOS creates .bak)
+        rm -f "${ENV_FILE}.bak"
+    fi
+else
+    # No .env file — create from template
+    echo -e "${INFO} Creating backend/.env configuration..."
+    echo ""
+
+    EXAMPLE_FILE="$PROJECT_DIR/backend/.env.example"
+    if [ -f "$EXAMPLE_FILE" ]; then
+        cp "$EXAMPLE_FILE" "$ENV_FILE"
+    else
+        # Create minimal .env
+        cat > "$ENV_FILE" << 'ENVEOF'
+APP_MODE=local
+DJANGO_SECRET_KEY=local-dev-key-change-if-needed
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,*
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/0
+SCANNER_SERVICE_URL=http://scanner:8001
+GOOGLE_SAFE_BROWSING_API_KEY=
+VIRUSTOTAL_API_KEY=
+DOMAIN_REPUTATION_CACHE_HOURS=24
+ENVEOF
+    fi
+
+    echo -e "${CHECK} Configuration file created"
+    echo ""
+    echo -e "${INFO} Let's configure your API keys for domain reputation checks."
+    echo -e "${DIM}    You can skip by pressing Enter (features will be disabled).${NC}"
+    echo ""
+
+    echo -e "${CYAN}  Google Safe Browsing API Key${NC}"
+    echo -e "${DIM}    Get it free: https://developers.google.com/safe-browsing/v4/get-started${NC}"
+    read -p "  → Enter key (or press Enter to skip): " INPUT_GOOGLE
+    if [ -n "$INPUT_GOOGLE" ]; then
+        sed -i.bak "s|GOOGLE_SAFE_BROWSING_API_KEY=.*|GOOGLE_SAFE_BROWSING_API_KEY=${INPUT_GOOGLE}|" "$ENV_FILE"
+        echo -e "${CHECK} Google Safe Browsing API key saved"
+    else
+        echo -e "${DIM}    Skipped${NC}"
+    fi
+    echo ""
+
+    echo -e "${CYAN}  VirusTotal API Key${NC}"
+    echo -e "${DIM}    Get it free: https://www.virustotal.com/gui/my-apikey${NC}"
+    read -p "  → Enter key (or press Enter to skip): " INPUT_VT
+    if [ -n "$INPUT_VT" ]; then
+        sed -i.bak "s|VIRUSTOTAL_API_KEY=.*|VIRUSTOTAL_API_KEY=${INPUT_VT}|" "$ENV_FILE"
+        echo -e "${CHECK} VirusTotal API key saved"
+    else
+        echo -e "${DIM}    Skipped${NC}"
+    fi
+
+    # Clean up sed backup files
+    rm -f "${ENV_FILE}.bak"
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 4: Build & Start containers (with progress)
+# ═══════════════════════════════════════════════════════════════════════════════
+echo -e "${CYAN}─── Step 4/5: Building & starting services ─────────────${NC}"
 echo ""
 
 # Check if images already exist (not first run)
@@ -200,7 +315,6 @@ echo ""
 # Build with visible progress (--progress=plain shows every step)
 echo -e "${BOLD}──── Docker Build Log ──────────────────────────────────${NC}"
 docker compose build --progress=plain 2>&1 | while IFS= read -r line; do
-    # Highlight key build events
     if echo "$line" | grep -qE "^#[0-9]+ \["; then
         echo -e "${DIM}  ${line}${NC}"
     elif echo "$line" | grep -qi "DONE\|CACHED"; then
@@ -227,18 +341,35 @@ echo ""
 echo -e "${CHECK} All images built successfully"
 echo ""
 
-# Start containers
-echo -e "${WAIT} Starting containers..."
+# Start containers (Redis starts automatically as part of docker-compose)
+echo -e "${WAIT} Starting containers (including Redis)..."
 docker compose up -d 2>&1
-echo -e "${CHECK} Containers started"
+echo -e "${CHECK} All containers started (backend, scanner, frontend, redis, celery)"
 
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 4: Health checks & status
+# STEP 5: Health checks & status
 # ═══════════════════════════════════════════════════════════════════════════════
-echo -e "${CYAN}─── Step 4/4: Waiting for services ─────────────────────${NC}"
+echo -e "${CYAN}─── Step 5/5: Waiting for services ─────────────────────${NC}"
 echo ""
+
+# Check Redis first
+echo -ne "${WAIT} Redis "
+RETRIES=0
+while ! docker compose exec -T redis redis-cli ping &>/dev/null 2>&1; do
+    echo -n "."
+    sleep 2
+    RETRIES=$((RETRIES + 1))
+    if [ $RETRIES -gt 15 ]; then
+        echo ""
+        echo -e "${YELLOW}    Redis is taking longer than expected...${NC}"
+        break
+    fi
+done
+if docker compose exec -T redis redis-cli ping &>/dev/null 2>&1; then
+    echo -e " ${GREEN}ready${NC}"
+fi
 
 # Check backend
 echo -ne "${WAIT} Backend "
@@ -296,6 +427,12 @@ echo -e "${CYAN}─── System Status ─────────────�
 echo ""
 
 # Final status
+if docker compose exec -T redis redis-cli ping &>/dev/null 2>&1; then
+    echo -e "  Redis:    ${GREEN}🟢 running${NC}  → port 6379 (Docker)"
+else
+    echo -e "  Redis:    ${RED}🔴 starting...${NC}"
+fi
+
 if curl -s http://localhost:8000/api/dashboard/ &>/dev/null; then
     echo -e "  Backend:  ${GREEN}🟢 running${NC}  → http://localhost:8000"
 else
@@ -312,12 +449,6 @@ if curl -s http://localhost:3000/ &>/dev/null; then
     echo -e "  Frontend: ${GREEN}🟢 running${NC}  → http://localhost:3000"
 else
     echo -e "  Frontend: ${RED}🔴 starting...${NC}"
-fi
-
-if docker compose exec -T redis redis-cli ping &>/dev/null 2>&1; then
-    echo -e "  Redis:    ${GREEN}🟢 running${NC}"
-else
-    echo -e "  Redis:    ${RED}🔴 starting...${NC}"
 fi
 
 echo ""

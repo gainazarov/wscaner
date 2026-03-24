@@ -18,7 +18,7 @@ cd /d "%SCRIPT_DIR%"
 :: ═══════════════════════════════════════════════════════════════
 :: STEP 1: Check Prerequisites
 :: ═══════════════════════════════════════════════════════════════
-echo --- Step 1/4: Checking prerequisites ---
+echo --- Step 1/5: Checking prerequisites ---
 echo.
 
 :: ── 1a. Check Git ──
@@ -95,12 +95,13 @@ if %ERRORLEVEL%==0 (
     exit /b 1
 )
 
+echo [i] Redis will run automatically inside Docker (no local install needed)
 echo.
 
 :: ═══════════════════════════════════════════════════════════════
 :: STEP 2: Clone or update project
 :: ═══════════════════════════════════════════════════════════════
-echo --- Step 2/4: Project setup ---
+echo --- Step 2/5: Project setup ---
 echo.
 
 :: Check if we're inside the project already
@@ -146,9 +147,78 @@ if exist "%PROJECT_DIR%\docker-compose.yml" (
 echo.
 
 :: ═══════════════════════════════════════════════════════════════
-:: STEP 3: Build & Start (with progress)
+:: STEP 3: Configure API keys
 :: ═══════════════════════════════════════════════════════════════
-echo --- Step 3/4: Building ^& starting services ---
+echo --- Step 3/5: Configuration ---
+echo.
+
+set "ENV_FILE=backend\.env"
+set "ENV_EXAMPLE=backend\.env.example"
+
+if exist "%ENV_FILE%" (
+    :: Check if API keys are already set
+    findstr /C:"GOOGLE_SAFE_BROWSING_API_KEY=" "%ENV_FILE%" | findstr /V "GOOGLE_SAFE_BROWSING_API_KEY=$" | findstr /V "GOOGLE_SAFE_BROWSING_API_KEY=your" >nul 2>nul
+    if %ERRORLEVEL%==0 (
+        echo [OK] API keys already configured
+        goto config_done
+    )
+)
+
+:: Create .env from template if it doesn't exist
+if not exist "%ENV_FILE%" (
+    if exist "%ENV_EXAMPLE%" (
+        copy "%ENV_EXAMPLE%" "%ENV_FILE%" >nul
+        echo [OK] Configuration file created from template
+    ) else (
+        echo APP_MODE=local> "%ENV_FILE%"
+        echo DJANGO_SECRET_KEY=local-dev-key-change-if-needed>> "%ENV_FILE%"
+        echo DEBUG=True>> "%ENV_FILE%"
+        echo ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,*>> "%ENV_FILE%"
+        echo CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000>> "%ENV_FILE%"
+        echo CELERY_BROKER_URL=redis://redis:6379/0>> "%ENV_FILE%"
+        echo CELERY_RESULT_BACKEND=redis://redis:6379/0>> "%ENV_FILE%"
+        echo SCANNER_SERVICE_URL=http://scanner:8001>> "%ENV_FILE%"
+        echo GOOGLE_SAFE_BROWSING_API_KEY=>> "%ENV_FILE%"
+        echo VIRUSTOTAL_API_KEY=>> "%ENV_FILE%"
+        echo DOMAIN_REPUTATION_CACHE_HOURS=24>> "%ENV_FILE%"
+        echo [OK] Configuration file created
+    )
+)
+
+echo.
+echo [i] Configure API keys for domain reputation checks.
+echo     You can skip by pressing Enter (features will be disabled).
+echo.
+
+echo   Google Safe Browsing API Key
+echo     Get it free: https://developers.google.com/safe-browsing/v4/get-started
+set /p "INPUT_GOOGLE=  Enter key (or press Enter to skip): "
+if defined INPUT_GOOGLE (
+    :: Use PowerShell to safely replace the line in .env
+    powershell -Command "(Get-Content '%ENV_FILE%') -replace 'GOOGLE_SAFE_BROWSING_API_KEY=.*', 'GOOGLE_SAFE_BROWSING_API_KEY=%INPUT_GOOGLE%' | Set-Content '%ENV_FILE%'"
+    echo [OK] Google Safe Browsing API key saved
+) else (
+    echo     Skipped — you can add it later in backend\.env
+)
+echo.
+
+echo   VirusTotal API Key
+echo     Get it free: https://www.virustotal.com/gui/my-apikey
+set /p "INPUT_VT=  Enter key (or press Enter to skip): "
+if defined INPUT_VT (
+    powershell -Command "(Get-Content '%ENV_FILE%') -replace 'VIRUSTOTAL_API_KEY=.*', 'VIRUSTOTAL_API_KEY=%INPUT_VT%' | Set-Content '%ENV_FILE%'"
+    echo [OK] VirusTotal API key saved
+) else (
+    echo     Skipped — you can add it later in backend\.env
+)
+
+:config_done
+echo.
+
+:: ═══════════════════════════════════════════════════════════════
+:: STEP 4: Build & Start (with progress)
+:: ═══════════════════════════════════════════════════════════════
+echo --- Step 4/5: Building ^& starting services ---
 echo.
 echo [i] Building all images (first run may take 5-10 minutes)...
 echo.
@@ -170,16 +240,16 @@ echo.
 echo [OK] All images built successfully
 echo.
 
-:: Start containers
-echo [...] Starting containers...
+:: Start containers (includes Redis)
+echo [...] Starting containers (including Redis)...
 docker compose up -d
-echo [OK] Containers started
+echo [OK] All containers started (backend, scanner, frontend, redis, celery)
 echo.
 
 :: ═══════════════════════════════════════════════════════════════
-:: STEP 4: Health checks & status
+:: STEP 5: Health checks & status
 :: ═══════════════════════════════════════════════════════════════
-echo --- Step 4/4: Waiting for services ---
+echo --- Step 5/5: Waiting for services ---
 echo.
 echo [...] Waiting for services to be ready...
 timeout /t 15 >nul
@@ -187,10 +257,10 @@ timeout /t 15 >nul
 echo.
 echo --- System Status ---
 echo.
+echo   Redis:    running (Docker)
 echo   Frontend: http://localhost:3000
 echo   Backend:  http://localhost:8000
 echo   Scanner:  http://localhost:8001
-echo   Redis:    running
 echo.
 echo ═══════════════════════════════════════════════════════════
 echo   🎉 Ziyo Scanner is ready!
