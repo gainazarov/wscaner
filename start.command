@@ -303,6 +303,45 @@ echo ""
 echo -e "${CYAN}─── Step 4/5: Building & starting services ─────────────${NC}"
 echo ""
 
+# ── Check for port conflicts ──
+echo -e "${WAIT} Checking for port conflicts..."
+PORT_CONFLICT=0
+for PORT in 8000 8001 3000 6080; do
+    if lsof -i :$PORT -sTCP:LISTEN &>/dev/null 2>&1; then
+        PROC_NAME=$(lsof -i :$PORT -sTCP:LISTEN -t 2>/dev/null | head -1)
+        PROC_INFO=$(ps -p "$PROC_NAME" -o comm= 2>/dev/null || echo "unknown")
+        # Skip if it's our own docker containers
+        if echo "$PROC_INFO" | grep -qi "com.docker\|docker"; then
+            continue
+        fi
+        echo -e "${YELLOW}[!] Port $PORT is in use by: ${PROC_INFO} (PID: ${PROC_NAME})${NC}"
+        PORT_CONFLICT=1
+    fi
+done
+
+if [ "$PORT_CONFLICT" -eq 1 ]; then
+    echo ""
+    read -p "  Stop conflicting processes and continue? (y/N): " KILL_CONFIRM
+    if [[ "$KILL_CONFIRM" =~ ^[Yy]$ ]]; then
+        for PORT in 8000 8001 3000 6080; do
+            PIDS=$(lsof -i :$PORT -sTCP:LISTEN -t 2>/dev/null || true)
+            for PID in $PIDS; do
+                PROC_INFO=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
+                if echo "$PROC_INFO" | grep -qi "com.docker\|docker"; then
+                    continue
+                fi
+                kill "$PID" 2>/dev/null && echo -e "${CHECK} Stopped process on port $PORT (PID: $PID)"
+            done
+        done
+        sleep 1
+    else
+        echo -e "${INFO} Continuing anyway — Docker may fail if ports are busy."
+    fi
+else
+    echo -e "${CHECK} No port conflicts"
+fi
+echo ""
+
 # Check if images already exist (not first run)
 EXISTING_IMAGES=$(docker compose images -q 2>/dev/null | wc -l | tr -d ' ')
 if [ "$EXISTING_IMAGES" -gt 0 ] 2>/dev/null; then

@@ -224,6 +224,28 @@ echo.
 :: ===========================================================
 echo --- Step 4/5: Building and starting services ---
 echo.
+
+:: -- Check for port conflicts --
+echo [...] Checking for port conflicts...
+set "PORT_CONFLICT=0"
+for %%P in (8000 8001 3000 6080) do (
+    netstat -ano 2>nul | findstr ":%%P " | findstr "LISTENING" >nul 2>nul
+    if not errorlevel 1 (
+        echo [!!] Port %%P is already in use
+        set "PORT_CONFLICT=1"
+    )
+)
+if "!PORT_CONFLICT!"=="1" (
+    echo.
+    echo [i] Some ports are busy. Docker may fail to start.
+    echo     Close applications using these ports and try again,
+    echo     or press any key to continue anyway.
+    pause >nul
+) else (
+    echo [OK] No port conflicts
+)
+echo.
+
 echo [i] Building all images (first run may take 5-10 minutes)...
 echo.
 echo ---- Docker Build Log ----
