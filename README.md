@@ -40,34 +40,46 @@ Your Machine (localhost)
 
 All traffic comes from **your machine** — same IP, same network, same browser fingerprint as a real user.
 
-## 🚀 Quick Start (One Click)
+## 🚀 Quick Start
 
-### macOS
+### Prerequisites
+
+- **Git** — [git-scm.com/downloads](https://git-scm.com/downloads)
+- **Docker Desktop** — [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/)
+- **4GB+ RAM** recommended
+
+### Install & Run (One Command)
+
+#### macOS / Linux
 
 ```bash
-# Double-click start.command
-# OR from terminal:
-./start.command
+# Download and run the launcher:
+curl -sL https://raw.githubusercontent.com/gainazarov/wscaner/main/start.command -o start.command && chmod +x start.command && ./start.command
 ```
 
-### Windows
+#### Windows
 
-```bash
-# Double-click start.bat
+```powershell
+# Download and run the launcher:
+curl -sL https://raw.githubusercontent.com/gainazarov/wscaner/main/start.bat -o start.bat && start.bat
 ```
 
-### Manual (any OS)
+#### Manual
 
 ```bash
-docker compose up --build
+git clone https://github.com/gainazarov/wscaner.git
+cd wscaner
+docker compose build --progress=plain
+docker compose up -d
 # Open: http://localhost:3000
 ```
 
-**That's it.** The launcher will:
-1. ✅ Check Git & Docker are installed
-2. ✅ Build all containers
-3. ✅ Start services
-4. ✅ Open the UI in your browser
+**The launcher will automatically:**
+1. ✅ Check/install Git & Docker
+2. ✅ Clone the project from GitHub
+3. ✅ Build all containers (with visible progress)
+4. ✅ Start services & health-check
+5. ✅ Open the UI in your browser
 
 ## 📦 Scanner Modules
 
