@@ -1,5 +1,5 @@
 """
-Django settings for WebSentinal project.
+Django settings for WScaner project.
 """
 
 import os

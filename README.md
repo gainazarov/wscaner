@@ -1,14 +1,14 @@
-# 🛡️ Ziyo Scanner — Local-First Link Discovery Tool
+# 🛡️ WScaner — Local-First Link Discovery Tool
 
 > Discover, scan, and monitor all URLs on any website.  
 > Runs entirely on your machine — your IP, your network, your browser.  
-> **Designed with brain. Built with heart. — Gainazarov • ZIYO**
+> **Designed with brain. Built with heart. — Gainazarov**
 
 ---
 
-## 🎯 What is Ziyo Scanner?
+## 🎯 What is WScaner?
 
-Ziyo Scanner is a **local-first** security & link discovery tool that:
+WScaner is a **local-first** security & link discovery tool that:
 
 - 🔍 **Scans** websites to find ALL possible URLs (HTML, JS, sitemap, robots, bruteforce)
 - 🧠 **Behavior-driven** — clicks buttons, detects SPA navigation, captures API calls
@@ -173,4 +173,4 @@ MIT
 
 ---
 
-**Ziyo Scanner** — Find every link. Miss nothing. From your machine.
+**WScaner** — Find every link. Miss nothing. From your machine.

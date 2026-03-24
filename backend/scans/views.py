@@ -537,7 +537,24 @@ def scan_stream(request, scan_id):
     # ── Load auth config for authenticated scanning ──────────────────
     auth_payload = None
     try:
-        auth_cfg = SiteAuthConfig.objects.get(domain=scan.domain, is_enabled=True)
+        # Try exact domain match first, then case-insensitive
+        scan_domain = scan.domain.strip().lower()
+        try:
+            auth_cfg = SiteAuthConfig.objects.get(domain=scan_domain, is_enabled=True)
+        except SiteAuthConfig.DoesNotExist:
+            # Fallback: case-insensitive lookup
+            auth_cfg = SiteAuthConfig.objects.filter(
+                domain__iexact=scan_domain, is_enabled=True
+            ).first()
+            if auth_cfg is None:
+                # Log all available configs for debugging
+                all_configs = list(SiteAuthConfig.objects.values_list('domain', 'is_enabled', 'auth_type'))
+                logger.info(
+                    f"Scan #{scan.id} SSE: no auth config for '{scan_domain}'. "
+                    f"Available configs: {all_configs}"
+                )
+                raise SiteAuthConfig.DoesNotExist()
+
         if auth_cfg.auth_type != "none":
             auth_payload = {
                 "auth_type": auth_cfg.auth_type,
@@ -567,9 +584,11 @@ def scan_stream(request, scan_id):
                 from django.utils import timezone as tz
                 if auth_cfg.session_valid_until and auth_cfg.session_valid_until > tz.now():
                     auth_payload["saved_session_cookies"] = auth_cfg.session_cookies
-            logger.info(f"Scan #{scan.id} SSE: auth enabled ({auth_cfg.auth_type})")
+            logger.info(f"Scan #{scan.id} SSE: auth enabled ({auth_cfg.auth_type}), domain='{auth_cfg.domain}'")
+        else:
+            logger.info(f"Scan #{scan.id} SSE: auth config found but type='none', skipping auth")
     except SiteAuthConfig.DoesNotExist:
-        pass
+        logger.info(f"Scan #{scan.id} SSE: no auth config found for domain '{scan.domain}', scanning without auth")
     except Exception as e:
         logger.warning(f"Scan #{scan.id} SSE: auth config error: {e}. Scanning without auth.")
         auth_payload = None
@@ -628,7 +647,10 @@ def scan_stream(request, scan_id):
 
                 # Update SiteAuthConfig status
                 try:
-                    auth_cfg = SiteAuthConfig.objects.get(domain=scan.domain, is_enabled=True)
+                    auth_cfg = (
+                        SiteAuthConfig.objects.filter(domain__iexact=scan.domain.strip().lower(), is_enabled=True).first()
+                        or SiteAuthConfig.objects.get(domain=scan.domain, is_enabled=True)
+                    )
                     from django.utils import timezone as tz
                     if auth_result.get("success"):
                         auth_cfg.auth_status = SiteAuthConfig.AuthStatus.SUCCESS
@@ -1692,6 +1714,10 @@ def auth_config_get(request):
         config = SiteAuthConfig.objects.get(domain=domain)
         return Response(SiteAuthConfigSerializer(config).data)
     except SiteAuthConfig.DoesNotExist:
+        # Fallback: case-insensitive lookup for legacy entries
+        config = SiteAuthConfig.objects.filter(domain__iexact=domain).first()
+        if config:
+            return Response(SiteAuthConfigSerializer(config).data)
         return Response({
             "domain": domain,
             "auth_type": "none",
@@ -1725,7 +1751,10 @@ def auth_config_save(request):
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
 
-    domain = data["domain"]
+    domain = data["domain"].strip().lower()
+    if domain.startswith("http://") or domain.startswith("https://"):
+        from urllib.parse import urlparse
+        domain = urlparse(domain).netloc or domain
     config, created = SiteAuthConfig.objects.get_or_create(domain=domain)
 
     config.auth_type = data["auth_type"]

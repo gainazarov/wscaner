@@ -57,7 +57,7 @@ async def health(request: Request) -> JSONResponse:
     scan_mode = os.getenv("SCAN_MODE", "local")
     return JSONResponse({
         "status": "ok",
-        "service": "ziyo-scanner",
+        "service": "wscaner",
         "mode": scan_mode,
         "playwright_available": _PLAYWRIGHT_AVAILABLE,
     })
