@@ -547,13 +547,28 @@ def scan_stream(request, scan_id):
                 domain__iexact=scan_domain, is_enabled=True
             ).first()
             if auth_cfg is None:
-                # Log all available configs for debugging
-                all_configs = list(SiteAuthConfig.objects.values_list('domain', 'is_enabled', 'auth_type'))
-                logger.warning(
-                    f"Scan #{scan.id}: NO auth config for '{scan_domain}'. "
-                    f"DB configs: {all_configs}"
+                # Last resort: find ANY config with auth_type != 'none'
+                # (handles bug where is_enabled was wrongly saved as False)
+                fallback = (
+                    SiteAuthConfig.objects.filter(domain__iexact=scan_domain)
+                    .exclude(auth_type="none")
+                    .first()
                 )
-                raise SiteAuthConfig.DoesNotExist()
+                if fallback:
+                    logger.warning(
+                        f"Scan #{scan.id}: auth config for '{scan_domain}' has "
+                        f"is_enabled=False — auto-enabling (type={fallback.auth_type})"
+                    )
+                    fallback.is_enabled = True
+                    fallback.save(update_fields=["is_enabled"])
+                    auth_cfg = fallback
+                else:
+                    all_configs = list(SiteAuthConfig.objects.values_list('domain', 'is_enabled', 'auth_type'))
+                    logger.warning(
+                        f"Scan #{scan.id}: NO auth config for '{scan_domain}'. "
+                        f"DB configs: {all_configs}"
+                    )
+                    raise SiteAuthConfig.DoesNotExist()
             else:
                 logger.warning(f"Scan #{scan.id}: auth config found via iexact fallback: '{auth_cfg.domain}'")
 

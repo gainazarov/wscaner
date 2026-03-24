@@ -552,7 +552,7 @@ class SiteAuthConfigWriteSerializer(serializers.Serializer):
         choices=SiteAuthConfig.AuthStrategy.choices,
         required=False, default="auto",
     )
-    is_enabled = serializers.BooleanField(default=False)
+    is_enabled = serializers.BooleanField(default=True, required=False)
 
     # Form login
     login_url = serializers.CharField(max_length=2048, required=False, allow_blank=True, default="")
