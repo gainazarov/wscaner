@@ -880,6 +880,12 @@ export const api = {
     );
   },
 
+  resetRecording: () =>
+    fetch(`${API_BASE}/auth/record/reset/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    }).then((r) => r.json()).catch(() => ({ success: false })),
+
   // ── Scanner Logs ──────────────────────────────────────────────────────
   getScannerLogs: async (
     file: string = "scanner",

@@ -43,6 +43,7 @@ from core.recorder import (
     start_recording,
     stop_recording,
     get_recording_status,
+    force_reset_recording,
 )
 from core.logging_config import setup_logging, get_log_content, get_log_files_info
 
@@ -1150,6 +1151,12 @@ async def auth_record_status(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def auth_record_reset(request: Request) -> JSONResponse:
+    """Force-reset any active recording session."""
+    result = await force_reset_recording()
+    return JSONResponse(result)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Log Viewer Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1217,6 +1224,7 @@ routes = [
     Route("/auth/record/start", auth_record_start, methods=["POST"]),
     Route("/auth/record/stop", auth_record_stop, methods=["POST"]),
     Route("/auth/record/status", auth_record_status, methods=["GET"]),
+    Route("/auth/record/reset", auth_record_reset, methods=["POST"]),
     Route("/logs", logs_view, methods=["GET"]),
     Route("/logs/files", logs_files, methods=["GET"]),
     Route("/logs/clear", logs_clear, methods=["POST"]),

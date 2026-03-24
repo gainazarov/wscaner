@@ -767,10 +767,29 @@ async def start_recording(domain: str, start_url: str = "") -> dict:
     async with _session_lock:
         # Guard: reject if there's already an active session
         if _active_session and _active_session._state in (RecorderState.STARTING, RecorderState.RUNNING):
-            return {
-                "success": False,
-                "error": f"Recording already active (session={_active_session.session_id}, state={_active_session.status})",
-            }
+            # Force-cleanup stale sessions stuck in STARTING > 60s or RUNNING > 10min
+            elapsed = _active_session.elapsed
+            is_stale = (
+                (_active_session._state == RecorderState.STARTING and elapsed > 60)
+                or (_active_session._state == RecorderState.RUNNING and elapsed > 600)
+            )
+            if is_stale:
+                logger.warning(
+                    f"Force-cleaning stale session {_active_session.session_id} "
+                    f"(state={_active_session.status}, elapsed={elapsed:.0f}s)"
+                )
+                try:
+                    if _active_session._auto_timeout_task and not _active_session._auto_timeout_task.done():
+                        _active_session._auto_timeout_task.cancel()
+                    await _cleanup_session(_active_session)
+                except Exception:
+                    pass
+                _active_session = None
+            else:
+                return {
+                    "success": False,
+                    "error": f"Recording already active (session={_active_session.session_id}, state={_active_session.status})",
+                }
 
         # Force-cleanup any stale/stuck session
         if _active_session:
@@ -886,11 +905,15 @@ async def start_recording(domain: str, start_url: str = "") -> dict:
         })
 
         try:
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
-            logger.warning(f"[{session_id}] Navigation warning (continuing): {e}")
+            logger.warning(f"[{session_id}] Navigation timeout with domcontentloaded, retrying with commit: {e}")
+            try:
+                await page.goto(target_url, wait_until="commit", timeout=30000)
+            except Exception as e2:
+                logger.warning(f"[{session_id}] Navigation warning (continuing anyway): {e2}")
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(1.5)
 
         # Step 6.5: Force maximize browser window via xdotool
         _maximize_browser_window()
@@ -1001,6 +1024,30 @@ async def stop_recording(session_id: str) -> dict:
         "total_steps": len(merged),
         "duration": duration,
     }
+
+
+async def force_reset_recording() -> dict:
+    """Force-reset any active recording session (cleanup everything)."""
+    global _active_session
+
+    async with _session_lock:
+        if not _active_session:
+            return {"success": True, "message": "No active session to reset"}
+
+        session = _active_session
+        logger.warning(f"[{session.session_id}] Force-resetting session (state={session.status})")
+        try:
+            if session._auto_timeout_task and not session._auto_timeout_task.done():
+                session._auto_timeout_task.cancel()
+            await _cleanup_session(session)
+        except Exception as e:
+            logger.warning(f"Force-reset cleanup error: {e}")
+        _active_session = None
+
+    # Nuke all leftover processes
+    _nuke_all_display_procs()
+
+    return {"success": True, "message": f"Session {session.session_id} force-reset"}
 
 
 async def get_recording_status(session_id: str = "") -> dict:

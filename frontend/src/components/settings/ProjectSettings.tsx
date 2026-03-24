@@ -257,10 +257,18 @@ export function ProjectSettings() {
     setRecorderError("");
     setRecorderEventsCount(0);
     try {
-      const result = await api.startRecording({
+      let result = await api.startRecording({
         domain: selectedSite,
         start_url: homeUrl || loginUrl || undefined,
       });
+      // Auto-reset stale session and retry
+      if (!result.success && result.error?.includes("already active")) {
+        await api.resetRecording();
+        result = await api.startRecording({
+          domain: selectedSite,
+          start_url: homeUrl || loginUrl || undefined,
+        });
+      }
       if (result.success && result.session_id) {
         setRecorderSessionId(result.session_id);
         setIsRecording(true);
