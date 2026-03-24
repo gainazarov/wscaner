@@ -9,6 +9,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# Enable WAL mode for SQLite to reduce "database is locked" errors
+def _enable_wal(sender, connection, **kwargs):
+    if connection.vendor == "sqlite":
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
+
+
+from django.db.backends.signals import connection_created
+connection_created.connect(_enable_wal)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key-change-in-production")
@@ -71,6 +83,9 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.getenv("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
+        "OPTIONS": {
+            "timeout": 30,  # Wait up to 30s for locks
+        },
     }
 }
 

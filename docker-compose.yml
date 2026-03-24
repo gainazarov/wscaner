@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # Redis — message broker & cache
   redis:
@@ -74,7 +72,7 @@ services:
         condition: service_started
     volumes:
       - backend_data:/app/db
-    command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: sh -c "sleep 15 && celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
 
   # Scanner Service
   scanner:
